@@ -1,0 +1,42 @@
+name: Release
+
+# Push a tag vX.Y.Z. The built package is attached to the GitHub release, so products install it
+# without a registry or a token:
+#   "@openasy/auth": "https://github.com/openasy/auth/releases/download/vX.Y.Z/openasy-auth-X.Y.Z.tgz"
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Check the tag matches package.json
+        run: test "v$(node -p 'require("./package.json").version')" = "${GITHUB_REF_NAME}"
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+      - name: Pack
+        id: pack
+        run: echo "file=$(npm pack --silent)" >> "$GITHUB_OUTPUT"
+
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          files: ${{ steps.pack.outputs.file }}
+          generate_release_notes: true
+          body: |
+            ```json
+            "@openasy/auth": "https://github.com/openasy/auth/releases/download/${{ github.ref_name }}/${{ steps.pack.outputs.file }}"
+            ```

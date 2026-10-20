@@ -1,0 +1,356 @@
+// The OpenAPI description of /api/v1/auth (ADR 0014, 0024). Products merge it into their own description with
+// `mergeOpenApi`, so their API reference documents sign-in too; test/contract.test.ts checks every response against it.
+
+type Schema = Record<string, unknown>;
+const ref = (name: string) => ({ $ref: `#/components/schemas/${name}` });
+const str = { type: "string" };
+const dateTime = { type: "string", format: "date-time" };
+const nullable = (s: Schema) => ({ anyOf: [s, { type: "null" }] });
+const obj = (properties: Record<string, Schema>, required = Object.keys(properties)) => ({ type: "object", required, properties });
+const role = { type: "string", enum: ["owner", "admin", "editor", "viewer"] };
+const tokenRole = { type: "string", enum: ["admin", "editor", "viewer"] };
+
+const schemas: Record<string, Schema> = {
+  AuthProblem: obj(
+    {
+      type: { type: "string", format: "uri" },
+      title: str,
+      status: { type: "integer" },
+      code: {
+        type: "string",
+        description: "Stable; match on this.",
+        enum: [
+          "unauthenticated",
+          "invalid-credentials",
+          "invalid-token",
+          "mfa-required",
+          "mfa-setup-required",
+          "forbidden",
+          "cross-site",
+          "invalid-json",
+          "invalid-body",
+          "not-found",
+          "conflict",
+          "rate-limited",
+          "not-configured",
+        ],
+      },
+      detail: str,
+    },
+    ["type", "title", "status", "code"],
+  ),
+  AuthMethods: obj({
+    passwords: { type: "boolean" },
+    passkeys: { type: "boolean" },
+    providers: { type: "array", items: obj({ id: str, name: str }) },
+    setupRequired: { type: "boolean", description: "No owner yet: open the setup link from the log." },
+  }),
+  AuthMember: obj({
+    id: str,
+    email: str,
+    name: str,
+    role,
+    status: { type: "string", enum: ["invited", "active", "disabled"] },
+    createdAt: dateTime,
+    lastSignInAt: nullable(dateTime),
+    mfa: obj({ totp: { type: "boolean" }, passkeys: { type: "integer" } }),
+    providers: { type: "array", items: str, description: "Identity providers this person has signed in with." },
+  }),
+  AuthSignedIn: obj({ status: { const: "signed-in" }, user: ref("AuthMember"), mfaSetupRequired: { type: "boolean" } }),
+  AuthMfaRequired: obj({ status: { const: "mfa-required" }, methods: { type: "array", items: { type: "string", enum: ["totp", "passkey", "recovery-code"] } } }),
+  AuthMe: obj({
+    user: ref("AuthMember"),
+    session: obj({ id: str, method: str, mfa: { type: "boolean" } }),
+    mfaSetupRequired: { type: "boolean" },
+    hasPassword: { type: "boolean" },
+    passkeys: { type: "array", items: obj({ id: str, name: str, createdAt: dateTime, lastUsedAt: nullable(dateTime) }) },
+    recoveryCodesLeft: { type: "integer" },
+  }),
+  AuthSession: obj({ id: str, method: str, ip: str, userAgent: str, createdAt: dateTime, lastSeenAt: dateTime, current: { type: "boolean" } }),
+  AuthRecoveryCodes: obj({ recoveryCodes: { type: "array", items: str, minItems: 10, maxItems: 10 } }),
+  AuthLink: obj({ link: { type: "string", format: "uri" }, linkExpiresAt: dateTime }),
+  AuthToken: obj({
+    id: str,
+    name: str,
+    role: tokenRole,
+    createdBy: nullable(str),
+    createdAt: dateTime,
+    expiresAt: dateTime,
+    lastUsedAt: nullable(dateTime),
+    expired: { type: "boolean" },
+  }),
+  AuthWebAuthnOptions: { type: "object", required: ["challenge"], description: "WebAuthn options as JSON, for navigator.credentials (or @simplewebauthn/browser)." },
+};
+
+const json = (schema: Schema, description = "OK") => ({ description, content: { "application/json": { schema } } });
+const empty = (description: string) => ({ description });
+const problems = (...codes: number[]) => Object.fromEntries(codes.map((c) => [String(c), { $ref: "#/components/responses/AuthProblem" }]));
+const body = (schema: Schema) => ({ required: true, content: { "application/json": { schema } } });
+const pathParam = (name: string) => ({ name, in: "path", required: true, schema: str });
+
+const anyone: unknown[] = [];
+const signedIn = [{ session: [] }];
+const admin = [{ session: [] }, { apiToken: [] }];
+
+interface Op {
+  operationId: string;
+  summary: string;
+  description?: string;
+  security: unknown[];
+  role?: string;
+  body?: Schema;
+  params?: string[];
+  responses: Record<string, unknown>;
+}
+
+const op = (o: Op) => ({
+  operationId: o.operationId,
+  tags: ["Sign-in"],
+  summary: o.summary,
+  ...(o.description && { description: o.description }),
+  security: o.security,
+  ...(o.params && { parameters: o.params.map(pathParam) }),
+  ...(o.body && { requestBody: body(o.body) }),
+  responses: o.responses,
+  ...(o.role && { "x-openasy-role": o.role }),
+});
+
+const unsafe = [400, 403, 422];
+const password = { type: "string", minLength: 12, maxLength: 256 };
+
+const paths = {
+  "/api/v1/auth/methods": {
+    get: op({ operationId: "authMethods", summary: "How people can sign in", security: anyone, responses: { "200": json(ref("AuthMethods")) } }),
+  },
+  "/api/v1/auth/setup": {
+    post: op({
+      operationId: "authSetup",
+      summary: "Create the owner",
+      description: "Only once, with the token from the setup link printed in the log on first start (ADR 0013).",
+      security: anyone,
+      body: obj({ token: str, name: str, email: str, password }),
+      responses: { "200": json(ref("AuthSignedIn")), ...problems(...unsafe) },
+    }),
+  },
+  "/api/v1/auth/login": {
+    post: op({
+      operationId: "authLogin",
+      summary: "Sign in with email and password",
+      description: "Signs in, or asks for the second step: then send the code to /login/mfa or use /login/passkey.",
+      security: anyone,
+      body: obj({ email: str, password: str }),
+      responses: { "200": json({ oneOf: [ref("AuthSignedIn"), ref("AuthMfaRequired")] }), ...problems(...unsafe, 401, 404, 429) },
+    }),
+  },
+  "/api/v1/auth/login/mfa": {
+    post: op({
+      operationId: "authLoginMfa",
+      summary: "Second step: authenticator code or recovery code",
+      security: anyone,
+      body: obj({ code: str, recoveryCode: str }, []),
+      responses: { "200": json(ref("AuthSignedIn")), ...problems(...unsafe, 401, 429) },
+    }),
+  },
+  "/api/v1/auth/login/passkey/options": {
+    post: op({
+      operationId: "authPasskeyOptions",
+      summary: "Start signing in with a passkey",
+      description: "Alone, or as the second step after a password.",
+      security: anyone,
+      responses: { "200": json(ref("AuthWebAuthnOptions")), ...problems(403) },
+    }),
+  },
+  "/api/v1/auth/login/passkey": {
+    post: op({
+      operationId: "authPasskeyLogin",
+      summary: "Finish signing in with a passkey",
+      security: anyone,
+      body: obj({ response: { type: "object" } }),
+      responses: { "200": json(ref("AuthSignedIn")), ...problems(...unsafe, 401) },
+    }),
+  },
+  "/api/v1/auth/oidc/{id}/start": {
+    get: op({
+      operationId: "authOidcStart",
+      summary: "Sign in through an identity provider",
+      description: "Redirects the browser to the provider. `return` is a path on this product to come back to.",
+      security: anyone,
+      params: ["id"],
+      responses: { "302": empty("To the identity provider"), ...problems(404, 503) },
+    }),
+  },
+  "/api/v1/auth/oidc/{id}/callback": {
+    get: op({
+      operationId: "authOidcCallback",
+      summary: "Where the identity provider sends the browser back",
+      description: "Register `<public URL>/api/v1/auth/oidc/<id>/callback` as the redirect URI. Errors redirect to the sign-in page with `?auth_error=`.",
+      security: anyone,
+      params: ["id"],
+      responses: { "302": empty("To the product, signed in, or to the sign-in page with an error") },
+    }),
+  },
+  "/api/v1/auth/logout": {
+    post: op({ operationId: "authLogout", summary: "Sign out", security: anyone, responses: { "204": empty("Signed out"), ...problems(403) } }),
+  },
+  "/api/v1/auth/links/{token}": {
+    get: op({
+      operationId: "authLink",
+      summary: "What an invitation or password link is for",
+      security: anyone,
+      params: ["token"],
+      responses: { "200": json(obj({ kind: { type: "string", enum: ["invite", "reset"] }, email: str, name: str, productName: str })), ...problems(404) },
+    }),
+    post: op({
+      operationId: "authAcceptLink",
+      summary: "Choose a password with an invitation or password link",
+      security: anyone,
+      params: ["token"],
+      body: obj({ password, name: str }, ["password"]),
+      responses: { "200": json(ref("AuthSignedIn")), ...problems(...unsafe, 404) },
+    }),
+  },
+  "/api/v1/auth/me": {
+    get: op({ operationId: "authMe", summary: "The signed-in person", security: signedIn, responses: { "200": json(ref("AuthMe")), ...problems(401, 403) } }),
+    patch: op({ operationId: "authRename", summary: "Change your name", security: signedIn, body: obj({ name: str }), responses: { "200": json(ref("AuthMember")), ...problems(...unsafe, 401) } }),
+  },
+  "/api/v1/auth/me/password": {
+    post: op({
+      operationId: "authChangePassword",
+      summary: "Change your password",
+      description: "Signs out every other session.",
+      security: signedIn,
+      body: obj({ currentPassword: str, newPassword: password }, ["newPassword"]),
+      responses: { "204": empty("Changed"), ...problems(...unsafe, 401) },
+    }),
+  },
+  "/api/v1/auth/me/sessions": {
+    get: op({ operationId: "authSessions", summary: "Where you are signed in", security: signedIn, responses: { "200": json(obj({ sessions: { type: "array", items: ref("AuthSession") } })), ...problems(401, 403) } }),
+  },
+  "/api/v1/auth/me/sessions/{id}": {
+    delete: op({ operationId: "authRevokeSession", summary: "Sign out a session", security: signedIn, params: ["id"], responses: { "204": empty("Signed out"), ...problems(401, 403, 404) } }),
+  },
+  "/api/v1/auth/me/totp": {
+    post: op({
+      operationId: "authStartTotp",
+      summary: "Start adding an authenticator app",
+      description: "Returns the secret and an otpauth:// URI for a QR code; confirm with one code.",
+      security: signedIn,
+      responses: { "200": json(obj({ secret: str, uri: str })), ...problems(401, 403, 409) },
+    }),
+    delete: op({
+      operationId: "authRemoveTotp",
+      summary: "Remove the authenticator app",
+      description: "Needs a session opened with a second factor.",
+      security: signedIn,
+      responses: { "204": empty("Removed"), ...problems(401, 403, 404) },
+    }),
+  },
+  "/api/v1/auth/me/totp/confirm": {
+    post: op({
+      operationId: "authConfirmTotp",
+      summary: "Turn on the authenticator app",
+      description: "With the first second factor, the answer holds ten recovery codes, shown once.",
+      security: signedIn,
+      body: obj({ code: str }),
+      responses: { "200": json(obj({ recoveryCodes: { type: "array", items: str } }, [])), ...problems(...unsafe, 401, 404) },
+    }),
+  },
+  "/api/v1/auth/me/recovery-codes": {
+    post: op({ operationId: "authNewRecoveryCodes", summary: "Replace your recovery codes", security: signedIn, responses: { "200": json(ref("AuthRecoveryCodes")), ...problems(401, 403, 409) } }),
+  },
+  "/api/v1/auth/me/passkeys/options": {
+    post: op({ operationId: "authPasskeyRegisterOptions", summary: "Start adding a passkey", security: signedIn, responses: { "200": json(ref("AuthWebAuthnOptions")), ...problems(401, 403) } }),
+  },
+  "/api/v1/auth/me/passkeys": {
+    post: op({
+      operationId: "authAddPasskey",
+      summary: "Add a passkey",
+      security: signedIn,
+      body: obj({ response: { type: "object" }, name: str }, ["response"]),
+      responses: {
+        "201": json(obj({ passkey: obj({ id: str, name: str, createdAt: dateTime }), recoveryCodes: { type: "array", items: str } }, ["passkey"]), "Added"),
+        ...problems(...unsafe, 401),
+      },
+    }),
+  },
+  "/api/v1/auth/me/passkeys/{id}": {
+    delete: op({ operationId: "authRemovePasskey", summary: "Remove a passkey", security: signedIn, params: ["id"], responses: { "204": empty("Removed"), ...problems(401, 403, 404) } }),
+  },
+  "/api/v1/auth/members": {
+    get: op({ operationId: "authMembers", summary: "List members", security: admin, role: "admin", responses: { "200": json(obj({ members: { type: "array", items: ref("AuthMember") } })), ...problems(401, 403) } }),
+    post: op({
+      operationId: "authInvite",
+      summary: "Invite a member",
+      description: "Returns a one-time link for them to choose a password, valid for 7 days. Only owners invite owners.",
+      security: signedIn,
+      role: "admin",
+      body: obj({ email: str, name: str, role }, ["email", "role"]),
+      responses: { "201": json(obj({ member: ref("AuthMember"), link: { type: "string", format: "uri" }, linkExpiresAt: dateTime }), "Invited"), ...problems(...unsafe, 401, 409) },
+    }),
+  },
+  "/api/v1/auth/members/{id}": {
+    patch: op({
+      operationId: "authUpdateMember",
+      summary: "Change a member's role or disable them",
+      description: "Disabling signs them out. There is always at least one owner.",
+      security: signedIn,
+      role: "admin",
+      params: ["id"],
+      body: obj({ role, status: { type: "string", enum: ["active", "disabled"] } }, []),
+      responses: { "200": json(ref("AuthMember")), ...problems(...unsafe, 401, 404, 409) },
+    }),
+    delete: op({ operationId: "authRemoveMember", summary: "Remove a member", security: signedIn, role: "admin", params: ["id"], responses: { "204": empty("Removed"), ...problems(401, 403, 404, 409) } }),
+  },
+  "/api/v1/auth/members/{id}/reset": {
+    post: op({
+      operationId: "authResetMember",
+      summary: "New password link for a member",
+      description: "Signs them out. With `mfa: true` their second factors are removed too.",
+      security: signedIn,
+      role: "admin",
+      params: ["id"],
+      body: obj({ mfa: { type: "boolean" } }, []),
+      responses: { "200": json(ref("AuthLink")), ...problems(...unsafe, 401, 404, 409) },
+    }),
+  },
+  "/api/v1/auth/tokens": {
+    get: op({ operationId: "authTokens", summary: "List API tokens", security: admin, role: "admin", responses: { "200": json(obj({ tokens: { type: "array", items: ref("AuthToken") } })), ...problems(401, 403) } }),
+    post: op({
+      operationId: "authCreateToken",
+      summary: "Create an API token",
+      description: "The secret is in `token` and is never shown again. The role is at most your own.",
+      security: signedIn,
+      role: "admin",
+      body: obj({ name: str, role: tokenRole, expiresInDays: { type: "integer", minimum: 1, maximum: 366, default: 90 } }, ["name", "role"]),
+      responses: { "201": json(obj({ id: str, name: str, role: tokenRole, expiresAt: dateTime, token: str }), "Created"), ...problems(...unsafe, 401) },
+    }),
+  },
+  "/api/v1/auth/tokens/{id}": {
+    delete: op({ operationId: "authRevokeToken", summary: "Revoke an API token", security: signedIn, role: "admin", params: ["id"], responses: { "204": empty("Revoked"), ...problems(401, 403, 404) } }),
+  },
+};
+
+/** The paths, schemas and security schemes of /api/v1/auth, as an OpenAPI 3.1 fragment. */
+export function authOpenApi() {
+  return {
+    tags: [{ name: "Sign-in", description: "Accounts, second factors, sessions, members and API tokens (@openasy/auth)." }],
+    paths,
+    components: {
+      schemas,
+      responses: { AuthProblem: { description: "An error, as RFC 9457 Problem Details.", content: { "application/problem+json": { schema: ref("AuthProblem") } } } },
+      securitySchemes: {
+        session: { type: "apiKey", in: "cookie", name: "__Host-openasy-session", description: "The browser session after signing in (`openasy-session` on plain http://localhost)." },
+        apiToken: { type: "http", scheme: "bearer", description: "An API token from Settings → API tokens: one role, always an expiry." },
+      },
+    },
+  };
+}
+
+type Spec = Record<string, unknown> & { tags?: unknown[]; paths?: Record<string, unknown>; components?: Record<string, Record<string, unknown>> };
+
+/** The product's description with /api/v1/auth added. The product's own components win on a name clash. */
+export function mergeOpenApi<T extends Spec>(spec: T, fragment = authOpenApi()): T {
+  const components = { ...spec.components } as Record<string, Record<string, unknown>>;
+  for (const [kind, entries] of Object.entries(fragment.components)) components[kind] = { ...entries, ...components[kind] };
+  return { ...spec, tags: [...(spec.tags ?? []), ...fragment.tags], paths: { ...spec.paths, ...fragment.paths }, components };
+}

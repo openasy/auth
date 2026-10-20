@@ -1,0 +1,1061 @@
+import { randomBytes, randomUUID } from "node:crypto";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import type { DatabaseSync } from "node:sqlite";
+import {
+  generateAuthenticationOptions,
+  generateRegistrationOptions,
+  verifyAuthenticationResponse,
+  verifyRegistrationResponse,
+  type AuthenticationResponseJSON,
+  type AuthenticatorTransport,
+  type RegistrationResponseJSON,
+} from "@simplewebauthn/server";
+import {
+  base32,
+  DUMMY_HASH,
+  fromBase32,
+  hashPassword,
+  matchTotp,
+  normalizeRecoveryCode,
+  randomToken,
+  recoveryCodes,
+  sealer,
+  sha256,
+  verifyPassword,
+} from "./crypto.ts";
+import { migrate } from "./db.ts";
+import { AuthError, clientIp, cookie, email as readEmail, parseCookies, readJson, sendJson, sendProblem, str } from "./http.ts";
+import { createOidc, validateProvider, type OidcClaims, type OidcProvider } from "./oidc.ts";
+import { atLeast, highest, isRole, needsMfa, type Role } from "./roles.ts";
+
+export { AuthError, sendProblem, type AuthProblem } from "./http.ts";
+export { ROLES, atLeast, type Role } from "./roles.ts";
+export type { OidcProvider } from "./oidc.ts";
+export { oidcFromEnv, readSecretsKey } from "./env.ts";
+export { authOpenApi, mergeOpenApi } from "./openapi.ts";
+
+export interface AuthOptions {
+  /** The product's SQLite database. The auth tables are added to it with an `auth_` prefix. */
+  db: DatabaseSync;
+  /** Short product id, used in API token prefixes: `oa_vulns_...`. */
+  product: string;
+  /** Shown in authenticator apps and passkey prompts: "OpenAsy Vulnerabilities". */
+  productName: string;
+  /** The URL people open, without a trailing slash: https://vulns.example.com. Sets cookie, CSRF and passkey scope. */
+  origin: string;
+  /** Other origins allowed to send requests with the session cookie, such as the Vite dev server. */
+  trustedOrigins?: string[];
+  /** Sign in with email and password. Default true; turn it off when everyone uses OIDC. */
+  passwords?: boolean;
+  oidc?: OidcProvider[];
+  /** 32 bytes that encrypt TOTP secrets at rest (ADR 0021). Without it they are stored in clear and a warning is due. */
+  secretsKey?: Buffer;
+  session?: {
+    /** Signed out after this long without a request. Default 60. */
+    idleMinutes?: number;
+    /** Signed out after this long whatever happens. Default 12. */
+    absoluteHours?: number;
+  };
+  /** Where links in invitations and the first-start message point. Defaults use query strings on the origin. */
+  links?: { setup?: (token: string) => string; password?: (token: string) => string; signIn?: (error?: string) => string };
+  /** Every sign-in, failure and change to people or tokens, for the audit log (ADR 0013). */
+  onEvent?: (event: AuthEvent) => void;
+  /** For tests. */
+  now?: () => number;
+}
+
+export interface AuthEvent {
+  type:
+    | "setup"
+    | "sign-in"
+    | "sign-in-failed"
+    | "sign-out"
+    | "session-ended"
+    | "password-changed"
+    | "mfa-enabled"
+    | "mfa-removed"
+    | "member-invited"
+    | "member-updated"
+    | "member-removed"
+    | "token-created"
+    | "token-revoked";
+  /** Who did it, when known. */
+  actor?: string;
+  /** Whom it was done to, when that is someone else. */
+  target?: string;
+  method?: string;
+  ip: string;
+  detail?: string;
+}
+
+export interface User {
+  id: string;
+  email: string;
+  name: string;
+  role: Role;
+  status: "invited" | "active" | "disabled";
+  createdAt: string;
+  lastSignInAt: string | null;
+  mfa: { totp: boolean; passkeys: number };
+  providers: string[];
+}
+
+export type Principal =
+  | { kind: "session"; user: User; role: Role; sessionId: string; method: string; mfa: boolean }
+  | { kind: "token"; tokenId: string; name: string; role: Role };
+
+interface UserRow {
+  id: string;
+  email: string;
+  name: string;
+  role: Role;
+  status: User["status"];
+  password_hash: string | null;
+  created_at: string;
+  last_sign_in_at: string | null;
+}
+
+const PREFIX = "/api/v1/auth";
+
+/**
+ * What a session is bound to: the browser and operating system from the User-Agent, without version numbers, so a
+ * browser update keeps the session but a cookie copied into another browser or machine type does not work there.
+ */
+const deviceOf = (req: IncomingMessage) => sha256((req.headers["user-agent"] ?? "").toLowerCase().replace(/[\d._]+/g, "").replace(/\s+/g, " ").trim());
+const MIN_PASSWORD = 12;
+const SAFE = new Set(["GET", "HEAD", "OPTIONS"]);
+
+interface Ctx {
+  req: IncomingMessage;
+  res: ServerResponse;
+  url: URL;
+  params: string[];
+  body: () => Promise<Record<string, unknown>>;
+}
+
+export function createAuth(opts: AuthOptions) {
+  const { db, product, productName } = opts;
+  const origin = opts.origin.replace(/\/$/, "");
+  const passwords = opts.passwords ?? true;
+  const providers = opts.oidc ?? [];
+  providers.forEach(validateProvider);
+  if (new Set(providers.map((p) => p.id)).size !== providers.length) throw new Error("OIDC provider ids must be unique");
+  const now = opts.now ?? Date.now;
+  const iso = (ms = now()) => new Date(ms).toISOString();
+  const idleMs = (opts.session?.idleMinutes ?? 60) * 60_000;
+  const absoluteMs = (opts.session?.absoluteHours ?? 12) * 3_600_000;
+  const secure = origin.startsWith("https://");
+  const rpID = new URL(origin).hostname;
+  const allowedOrigins = new Set([origin, ...(opts.trustedOrigins ?? [])]);
+  const secrets = sealer(opts.secretsKey);
+  const links = {
+    setup: opts.links?.setup ?? ((t: string) => `${origin}/?setup=${t}`),
+    password: opts.links?.password ?? ((t: string) => `${origin}/?link=${t}`),
+    signIn: opts.links?.signIn ?? ((e?: string) => `${origin}/${e ? `?auth_error=${encodeURIComponent(e)}` : ""}`),
+  };
+  const oidc = createOidc((id) => `${origin}${PREFIX}/oidc/${id}/callback`);
+  const emit = (e: AuthEvent) => opts.onEvent?.(e);
+
+  // __Host- cookies are only sent to this exact host, over HTTPS, for every path.
+  const C = secure
+    ? { session: "__Host-openasy-session", mfa: "__Host-openasy-mfa", webauthn: "__Host-openasy-webauthn", oidc: "__Host-openasy-oidc" }
+    : { session: "openasy-session", mfa: "openasy-mfa", webauthn: "openasy-webauthn", oidc: "openasy-oidc" };
+  const setCookie = (name: string, value: string, maxAge: number) => cookie(name, value, { secure, maxAge });
+  const clearCookie = (name: string) => cookie(name, "", { secure, maxAge: 0 });
+
+  migrate(db);
+
+  // ---- Data access ----------------------------------------------------------------------------------------------
+
+  const userRow = (id: string) => db.prepare("SELECT * FROM auth_users WHERE id = ?").get(id) as UserRow | undefined;
+  const userByEmail = (email: string) => db.prepare("SELECT * FROM auth_users WHERE email = ?").get(email) as UserRow | undefined;
+  const userCount = () => (db.prepare("SELECT COUNT(*) AS n FROM auth_users").get() as { n: number }).n;
+  const hasTotp = (userId: string) => !!db.prepare("SELECT 1 FROM auth_totp WHERE user_id = ? AND confirmed = 1").get(userId);
+  const passkeyCount = (userId: string) => (db.prepare("SELECT COUNT(*) AS n FROM auth_passkeys WHERE user_id = ?").get(userId) as { n: number }).n;
+  const hasMfa = (userId: string) => hasTotp(userId) || passkeyCount(userId) > 0;
+  const activeOwnersExcept = (userId: string) =>
+    (db.prepare("SELECT COUNT(*) AS n FROM auth_users WHERE role = 'owner' AND status = 'active' AND id != ?").get(userId) as { n: number }).n;
+
+  function toUser(row: UserRow): User {
+    const ids = db.prepare("SELECT provider FROM auth_identities WHERE user_id = ? ORDER BY provider").all(row.id) as Array<{ provider: string }>;
+    return {
+      id: row.id,
+      email: row.email,
+      name: row.name,
+      role: row.role,
+      status: row.status,
+      createdAt: row.created_at,
+      lastSignInAt: row.last_sign_in_at,
+      mfa: { totp: hasTotp(row.id), passkeys: passkeyCount(row.id) },
+      providers: ids.map((i) => i.provider),
+    };
+  }
+
+  function insertUser(u: { email: string; name: string; role: Role; status: User["status"]; passwordHash?: string | null }): UserRow {
+    const id = randomUUID();
+    db.prepare("INSERT INTO auth_users (id, email, name, role, status, password_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
+      id,
+      u.email,
+      u.name,
+      u.role,
+      u.status,
+      u.passwordHash ?? null,
+      iso(),
+    );
+    return userRow(id)!;
+  }
+
+  function createChallenge(kind: string, userId: string | null, data: Record<string, unknown>, ttlMs: number): string {
+    const token = randomToken();
+    db.prepare("INSERT INTO auth_challenges (id_hash, kind, user_id, data, expires_at) VALUES (?, ?, ?, ?, ?)").run(sha256(token), kind, userId, JSON.stringify(data), iso(now() + ttlMs));
+    return token;
+  }
+
+  function readChallenge(token: string | undefined, kind: string) {
+    if (!token) return undefined;
+    const row = db.prepare("SELECT * FROM auth_challenges WHERE id_hash = ? AND kind = ?").get(sha256(token), kind) as
+      | { id_hash: string; user_id: string | null; data: string; expires_at: string }
+      | undefined;
+    if (!row) return undefined;
+    if (row.expires_at <= iso()) {
+      db.prepare("DELETE FROM auth_challenges WHERE id_hash = ?").run(row.id_hash);
+      return undefined;
+    }
+    return { userId: row.user_id, data: JSON.parse(row.data) as Record<string, unknown>, idHash: row.id_hash };
+  }
+
+  const dropChallenge = (idHash: string) => db.prepare("DELETE FROM auth_challenges WHERE id_hash = ?").run(idHash);
+  const updateChallenge = (idHash: string, data: Record<string, unknown>) => db.prepare("UPDATE auth_challenges SET data = ? WHERE id_hash = ?").run(JSON.stringify(data), idHash);
+  const revokeSessions = (userId: string, exceptId?: string) =>
+    db.prepare("DELETE FROM auth_sessions WHERE user_id = ? AND id != ?").run(userId, exceptId ?? "");
+
+  // ---- Throttling -----------------------------------------------------------------------------------------------
+
+  // Failed sign-ins per address and per address+email, kept in memory: a restart forgets them, which is acceptable
+  // for one process (ADR 0018) and slows guessing to a crawl anyway.
+  const failures = new Map<string, number[]>();
+  const WINDOW = 15 * 60_000;
+  function throttle(keys: Array<[string, number]>) {
+    const t = now();
+    for (const [key, max] of keys) {
+      const recent = (failures.get(key) ?? []).filter((at) => t - at < WINDOW);
+      failures.set(key, recent);
+      if (recent.length >= max) throw new AuthError(429, "rate-limited", "Too many failed attempts. Wait 15 minutes and try again.");
+    }
+  }
+  function fail(keys: string[]) {
+    for (const key of keys) failures.set(key, [...(failures.get(key) ?? []), now()]);
+    if (failures.size > 10_000) failures.clear();
+  }
+
+  // ---- Sessions -------------------------------------------------------------------------------------------------
+
+  function startSession(req: IncomingMessage, user: UserRow, method: string, mfa: boolean): string {
+    const token = randomToken();
+    const t = now();
+    db.prepare(
+      "INSERT INTO auth_sessions (id_hash, id, user_id, method, mfa, ip, user_agent, device, created_at, last_seen_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(sha256(token), randomUUID(), user.id, method, mfa ? 1 : 0, clientIp(req), (req.headers["user-agent"] ?? "").slice(0, 256), deviceOf(req), iso(t), iso(t), iso(t + absoluteMs));
+    db.prepare("UPDATE auth_users SET last_sign_in_at = ? WHERE id = ?").run(iso(t), user.id);
+    emit({ type: "sign-in", actor: user.id, method, ip: clientIp(req) });
+    return setCookie(C.session, token, Math.floor(absoluteMs / 1000));
+  }
+
+  function signedIn(res: ServerResponse, req: IncomingMessage, user: UserRow, method: string, mfa: boolean, extra: string[] = []) {
+    const set = startSession(req, user, method, mfa);
+    sendJson(res, 200, { status: "signed-in", user: toUser(user), mfaSetupRequired: mfaSetupRequired(user, method) }, { "set-cookie": [set, ...extra] });
+  }
+
+  /** Owners and admins who signed in with a password must add a second factor before anything else. */
+  const mfaSetupRequired = (user: UserRow, method: string) => method === "password" && needsMfa(user.role) && !hasMfa(user.id);
+
+  function session(req: IncomingMessage) {
+    const token = parseCookies(req.headers.cookie)[C.session];
+    if (!token) return undefined;
+    const row = db
+      .prepare(
+        "SELECT s.id AS session_id, s.id_hash, s.method, s.mfa, s.device, s.last_seen_at, s.expires_at, u.* FROM auth_sessions s JOIN auth_users u ON u.id = s.user_id WHERE s.id_hash = ?",
+      )
+      .get(sha256(token)) as (UserRow & { session_id: string; id_hash: string; method: string; mfa: number; device: string; last_seen_at: string; expires_at: string }) | undefined;
+    if (!row) return undefined;
+    if (row.device && row.device !== deviceOf(req)) {
+      // The cookie is being used from another browser or system than the one that signed in: end the session.
+      db.prepare("DELETE FROM auth_sessions WHERE id_hash = ?").run(row.id_hash);
+      emit({ type: "session-ended", actor: row.id, ip: clientIp(req), detail: "session cookie used from another device", method: row.method });
+      return undefined;
+    }
+    const t = now();
+    if (row.expires_at <= iso(t) || Date.parse(row.last_seen_at) + idleMs <= t || row.status !== "active") {
+      db.prepare("DELETE FROM auth_sessions WHERE id_hash = ?").run(row.id_hash);
+      return undefined;
+    }
+    if (t - Date.parse(row.last_seen_at) > 60_000) db.prepare("UPDATE auth_sessions SET last_seen_at = ? WHERE id_hash = ?").run(iso(t), row.id_hash);
+    return { user: row as UserRow, sessionId: row.session_id, method: row.method, mfa: row.mfa === 1 };
+  }
+
+  /** Requests with the session cookie must come from the product's own pages. */
+  function checkOrigin(req: IncomingMessage) {
+    if (SAFE.has(req.method ?? "GET")) return;
+    const o = req.headers.origin;
+    if (o ? allowedOrigins.has(o) : req.headers["sec-fetch-site"] === "same-origin") return;
+    throw new AuthError(403, "cross-site", `Requests must come from ${origin}.`);
+  }
+
+  function tokenPrincipal(secret: string): Principal {
+    const row = db.prepare("SELECT * FROM auth_tokens WHERE secret_hash = ?").get(sha256(secret)) as
+      | { id: string; name: string; role: Role; expires_at: string; last_used_at: string | null }
+      | undefined;
+    if (!row || row.expires_at <= iso()) throw new AuthError(401, "invalid-token", "The API token is unknown or expired.");
+    if (!row.last_used_at || now() - Date.parse(row.last_used_at) > 60_000) db.prepare("UPDATE auth_tokens SET last_used_at = ? WHERE id = ?").run(iso(), row.id);
+    return { kind: "token", tokenId: row.id, name: row.name, role: row.role };
+  }
+
+  /**
+   * Who is calling: an API token (`Authorization: Bearer oa_...`) or the session cookie. Throws 401 or 403 when the
+   * caller may not do something that needs `min`. Use `{ allowMfaSetup: true }` only for routes an owner or admin
+   * needs while adding their second factor.
+   */
+  function authorize(req: IncomingMessage, min: Role, { allowMfaSetup = false } = {}): Principal {
+    const header = req.headers.authorization;
+    let p: Principal;
+    if (header?.startsWith("Bearer ")) {
+      const secret = header.slice(7);
+      if (!secret.startsWith("oa_")) throw new AuthError(401, "invalid-token", "Send an API token created in Settings, or sign in.");
+      p = tokenPrincipal(secret);
+    } else {
+      const s = session(req);
+      if (!s) throw new AuthError(401, "unauthenticated", "Sign in to continue.");
+      checkOrigin(req);
+      if (!allowMfaSetup && mfaSetupRequired(s.user, s.method)) throw new AuthError(403, "mfa-setup-required", "Set up two-step verification to continue.");
+      p = { kind: "session", user: toUser(s.user), role: s.user.role, sessionId: s.sessionId, method: s.method, mfa: s.mfa };
+    }
+    if (!atLeast(p.role, min)) throw new AuthError(403, "forbidden", `This needs the ${min} role or higher.`);
+    return p;
+  }
+
+  function sessionPrincipal(req: IncomingMessage, min: Role, o?: { allowMfaSetup?: boolean }) {
+    const p = authorize(req, min, o);
+    if (p.kind !== "session") throw new AuthError(403, "forbidden", "Only a signed-in person can do this, not an API token.");
+    return p;
+  }
+
+  /** Removing a factor or replacing recovery codes needs a session that was opened with a second factor. */
+  function requireStrongSession(p: Extract<Principal, { kind: "session" }>) {
+    if (p.method === "password" && !p.mfa && hasMfa(p.user.id)) throw new AuthError(403, "mfa-required", "Sign in again with your second factor to do this.");
+  }
+
+  // ---- Second factors -------------------------------------------------------------------------------------------
+
+  function checkTotp(userId: string, code: string): boolean {
+    const row = db.prepare("SELECT secret, last_step FROM auth_totp WHERE user_id = ? AND confirmed = 1").get(userId) as { secret: string; last_step: number } | undefined;
+    if (!row) return false;
+    const step = matchTotp(fromBase32(secrets.open(row.secret)), code, now());
+    if (step === null || step <= row.last_step) return false;
+    db.prepare("UPDATE auth_totp SET last_step = ? WHERE user_id = ?").run(step, userId);
+    return true;
+  }
+
+  function useRecoveryCode(userId: string, code: string): boolean {
+    const r = db.prepare("UPDATE auth_recovery_codes SET used_at = ? WHERE user_id = ? AND code_hash = ? AND used_at IS NULL").run(iso(), userId, sha256(normalizeRecoveryCode(code)));
+    return r.changes === 1;
+  }
+
+  function newRecoveryCodes(userId: string): string[] {
+    const codes = recoveryCodes();
+    db.prepare("DELETE FROM auth_recovery_codes WHERE user_id = ?").run(userId);
+    const insert = db.prepare("INSERT INTO auth_recovery_codes (user_id, code_hash) VALUES (?, ?)");
+    for (const c of codes) insert.run(userId, sha256(normalizeRecoveryCode(c)));
+    return codes;
+  }
+
+  /** After the first factor is added, the user gets recovery codes and the session counts as verified. */
+  function factorAdded(p: Extract<Principal, { kind: "session" }>, req: IncomingMessage, method: string) {
+    db.prepare("UPDATE auth_sessions SET mfa = 1 WHERE id = ?").run(p.sessionId);
+    emit({ type: "mfa-enabled", actor: p.user.id, method, ip: clientIp(req) });
+    const left = (db.prepare("SELECT COUNT(*) AS n FROM auth_recovery_codes WHERE user_id = ? AND used_at IS NULL").get(p.user.id) as { n: number }).n;
+    return left === 0 ? newRecoveryCodes(p.user.id) : undefined;
+  }
+
+  function factorRemoved(userId: string) {
+    if (!hasMfa(userId)) db.prepare("DELETE FROM auth_recovery_codes WHERE user_id = ?").run(userId);
+  }
+
+  const passkeys = (userId: string) =>
+    db.prepare("SELECT id, name, created_at, last_used_at, transports FROM auth_passkeys WHERE user_id = ? ORDER BY created_at").all(userId) as Array<{
+      id: string;
+      name: string;
+      created_at: string;
+      last_used_at: string | null;
+      transports: string;
+    }>;
+
+  // ---- OIDC -----------------------------------------------------------------------------------------------------
+
+  function oidcUser(p: OidcProvider, c: OidcClaims, ip: string): UserRow {
+    const refuse = (why: string) => {
+      emit({ type: "sign-in-failed", method: `oidc:${p.id}`, ip, detail: why });
+      return new AuthError(403, "forbidden", why);
+    };
+    if (p.allowedDomains && !(c.email && c.emailVerified && p.allowedDomains.includes(c.email.split("@")[1]!))) {
+      throw refuse(`Your ${p.name} account is not in an allowed domain.`);
+    }
+    const mapped = p.roleMapping ? highest(c.groups.map((g) => p.roleMapping![g]).filter(isRole)) : undefined;
+    const identity = db.prepare("SELECT user_id FROM auth_identities WHERE provider = ? AND subject = ?").get(p.id, c.subject) as { user_id: string } | undefined;
+    let user = identity ? userRow(identity.user_id) : undefined;
+    // An existing person is linked only by an email the provider says it has verified.
+    if (!user && c.email && c.emailVerified) user = userByEmail(c.email);
+    if (!user) {
+      const role = mapped ?? p.defaultRole;
+      if (!role || !c.email) throw refuse(`You have no access to ${productName}. Ask an admin to invite you.`);
+      user = insertUser({ email: c.email, name: c.name ?? c.email, role, status: "active" });
+    } else {
+      if (user.status === "disabled") throw refuse("Your account is disabled.");
+      if (p.roleMapping) {
+        const role = mapped ?? p.defaultRole;
+        if (!role) throw refuse(`You are in none of the groups that give access to ${productName}.`);
+        // The groups decide the role, except that the last owner is never demoted by the IdP.
+        if (role !== user.role && !(user.role === "owner" && activeOwnersExcept(user.id) === 0)) {
+          db.prepare("UPDATE auth_users SET role = ? WHERE id = ?").run(role, user.id);
+          emit({ type: "member-updated", target: user.id, method: `oidc:${p.id}`, ip, detail: `role ${user.role} -> ${role} from groups` });
+        }
+      }
+      if (user.status === "invited") db.prepare("UPDATE auth_users SET status = 'active' WHERE id = ?").run(user.id);
+    }
+    db.prepare(
+      "INSERT INTO auth_identities (provider, subject, user_id, email, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (provider, subject) DO UPDATE SET email = excluded.email, last_used_at = excluded.last_used_at",
+    ).run(p.id, c.subject, user.id, c.email ?? null, iso(), iso());
+    return userRow(user.id)!;
+  }
+
+  const provider = (id: string) => {
+    const p = providers.find((x) => x.id === id);
+    if (!p) throw new AuthError(404, "not-found", `No sign-in provider "${id}".`);
+    return p;
+  };
+
+  /** Only paths on this product, never another site. */
+  const safeReturn = (v: string | null) => (v && v.startsWith("/") && !v.startsWith("//") && !v.startsWith("/\\") ? v : "/");
+
+  // ---- Routes ---------------------------------------------------------------------------------------------------
+
+  const ok = (res: ServerResponse, data?: unknown, headers?: Record<string, string | string[]>) => sendJson(res, data === undefined ? 204 : 200, data, headers);
+
+  function newPassword(body: Record<string, unknown>, name = "password") {
+    const pw = str(body, name, { min: MIN_PASSWORD, max: 256 });
+    return pw;
+  }
+
+  function memberRole(body: Record<string, unknown>): Role {
+    if (!isRole(body.role)) throw new AuthError(422, "invalid-body", "role must be owner, admin, editor or viewer.");
+    return body.role;
+  }
+
+  /** Only owners manage owners; admins manage everyone else. */
+  function mayManage(actor: Role, target: Role) {
+    if (target === "owner" ? actor !== "owner" : !atLeast(actor, "admin")) throw new AuthError(403, "forbidden", "Only an owner can manage owners.");
+  }
+
+  function member(id: string) {
+    const row = userRow(id);
+    if (!row) throw new AuthError(404, "not-found", "No such member.");
+    return row;
+  }
+
+  const routes: Array<{ method: string; path: string; handle: (ctx: Ctx) => unknown }> = [
+    // What the sign-in screen should offer.
+    {
+      method: "GET",
+      path: "/methods",
+      handle: () => ({ passwords, passkeys: true, providers: providers.map((p) => ({ id: p.id, name: p.name })), setupRequired: userCount() === 0 }),
+    },
+
+    // First start: the one-time link printed in the log creates the owner (ADR 0013).
+    {
+      method: "POST",
+      path: "/setup",
+      handle: async ({ req, res, body }) => {
+        checkOrigin(req);
+        const b = await body();
+        const ch = readChallenge(str(b, "token", { max: 128 }), "setup");
+        if (!ch || userCount() > 0) throw new AuthError(403, "invalid-token", "This setup link is used or expired. Restart the product for a new one.");
+        const user = insertUser({ email: readEmail(b), name: str(b, "name", { max: 128 }).trim(), role: "owner", status: "active", passwordHash: await hashPassword(newPassword(b)) });
+        dropChallenge(ch.idHash);
+        emit({ type: "setup", actor: user.id, ip: clientIp(req) });
+        signedIn(res, req, user, "password", false);
+      },
+    },
+
+    {
+      method: "POST",
+      path: "/login",
+      handle: async ({ req, res, body }) => {
+        checkOrigin(req);
+        if (!passwords) throw new AuthError(404, "not-found", "Password sign-in is turned off.");
+        const b = await body();
+        const email = readEmail(b);
+        const password = str(b, "password", { max: 256 });
+        const ip = clientIp(req);
+        throttle([[`ip:${ip}`, 50], [`ip:${ip}:${email}`, 10]]);
+        const user = userByEmail(email);
+        const valid = await verifyPassword(password, user?.password_hash ?? DUMMY_HASH);
+        if (!user || !user.password_hash || !valid || user.status !== "active") {
+          fail([`ip:${ip}`, `ip:${ip}:${email}`]);
+          emit({ type: "sign-in-failed", actor: user?.id, method: "password", ip, detail: user && valid ? `account ${user.status}` : "wrong email or password" });
+          throw new AuthError(401, "invalid-credentials", "Wrong email or password.");
+        }
+        if (hasMfa(user.id)) {
+          const pending = createChallenge("mfa", user.id, { attempts: 0 }, 5 * 60_000);
+          const methods = [...(hasTotp(user.id) ? ["totp"] : []), ...(passkeyCount(user.id) ? ["passkey"] : []), "recovery-code"];
+          return ok(res, { status: "mfa-required", methods }, { "set-cookie": setCookie(C.mfa, pending, 300) });
+        }
+        signedIn(res, req, user, "password", false);
+      },
+    },
+
+    // Second step after the password: a TOTP code or a recovery code. Passkeys use /login/passkey.
+    {
+      method: "POST",
+      path: "/login/mfa",
+      handle: async ({ req, res, body }) => {
+        checkOrigin(req);
+        const ch = readChallenge(parseCookies(req.headers.cookie)[C.mfa], "mfa");
+        if (!ch?.userId) throw new AuthError(401, "unauthenticated", "Sign in with your password again.");
+        const b = await body();
+        const attempts = Number(ch.data.attempts) + 1;
+        if (attempts > 5) {
+          dropChallenge(ch.idHash);
+          throw new AuthError(429, "rate-limited", "Too many wrong codes. Sign in with your password again.");
+        }
+        updateChallenge(ch.idHash, { attempts });
+        const code = str(b, "code", { max: 32, optional: true });
+        const recovery = str(b, "recoveryCode", { max: 32, optional: true });
+        const valid = code ? checkTotp(ch.userId, code) : recovery ? useRecoveryCode(ch.userId, recovery) : false;
+        if (!valid) {
+          emit({ type: "sign-in-failed", actor: ch.userId, method: code ? "totp" : "recovery-code", ip: clientIp(req), detail: "wrong code" });
+          throw new AuthError(401, "invalid-credentials", "That code is not valid.");
+        }
+        dropChallenge(ch.idHash);
+        const user = userRow(ch.userId)!;
+        if (user.status !== "active") throw new AuthError(401, "invalid-credentials", "Your account is disabled.");
+        signedIn(res, req, user, "password", true, [clearCookie(C.mfa)]);
+      },
+    },
+
+    // Passkeys: alone (the passkey is both factors when the device verified the person), or as the second step.
+    {
+      method: "POST",
+      path: "/login/passkey/options",
+      handle: async ({ req, res }) => {
+        checkOrigin(req);
+        const mfa = readChallenge(parseCookies(req.headers.cookie)[C.mfa], "mfa");
+        const allow = mfa?.userId ? passkeys(mfa.userId).map((k) => ({ id: k.id, transports: JSON.parse(k.transports) as AuthenticatorTransport[] })) : undefined;
+        const options = await generateAuthenticationOptions({ rpID, allowCredentials: allow, userVerification: mfa ? "preferred" : "required" });
+        const id = createChallenge("webauthn-login", mfa?.userId ?? null, { challenge: options.challenge, mfa: mfa?.idHash ?? null }, 5 * 60_000);
+        ok(res, options, { "set-cookie": setCookie(C.webauthn, id, 300) });
+      },
+    },
+    {
+      method: "POST",
+      path: "/login/passkey",
+      handle: async ({ req, res, body }) => {
+        checkOrigin(req);
+        const ch = readChallenge(parseCookies(req.headers.cookie)[C.webauthn], "webauthn-login");
+        if (!ch) throw new AuthError(401, "unauthenticated", "The passkey request expired. Try again.");
+        dropChallenge(ch.idHash);
+        const response = (await body()).response as AuthenticationResponseJSON | undefined;
+        if (!response || typeof response.id !== "string") throw new AuthError(422, "invalid-body", "response must be the passkey's answer.");
+        const key = db.prepare("SELECT * FROM auth_passkeys WHERE id = ?").get(response.id) as
+          | { id: string; user_id: string; public_key: Uint8Array; counter: number; transports: string }
+          | undefined;
+        const ip = clientIp(req);
+        const failed = () => {
+          emit({ type: "sign-in-failed", actor: key?.user_id, method: "passkey", ip, detail: "passkey not accepted" });
+          return new AuthError(401, "invalid-credentials", "This passkey is not registered here.");
+        };
+        if (!key || (ch.userId && key.user_id !== ch.userId)) throw failed();
+        const verification = await verifyAuthenticationResponse({
+          response,
+          expectedChallenge: String(ch.data.challenge),
+          expectedOrigin: [...allowedOrigins],
+          expectedRPID: rpID,
+          credential: { id: key.id, publicKey: new Uint8Array(key.public_key), counter: key.counter, transports: JSON.parse(key.transports) as AuthenticatorTransport[] },
+          requireUserVerification: !ch.userId,
+        }).catch(() => ({ verified: false as const, authenticationInfo: undefined }));
+        if (!verification.verified || !verification.authenticationInfo) throw failed();
+        db.prepare("UPDATE auth_passkeys SET counter = ?, last_used_at = ? WHERE id = ?").run(verification.authenticationInfo.newCounter, iso(), key.id);
+        if (typeof ch.data.mfa === "string") dropChallenge(ch.data.mfa);
+        const user = userRow(key.user_id)!;
+        if (user.status !== "active") throw failed();
+        signedIn(res, req, user, ch.userId ? "password" : "passkey", true, [clearCookie(C.webauthn), clearCookie(C.mfa)]);
+      },
+    },
+
+    // OIDC: the browser is sent to the provider and comes back to /callback.
+    {
+      method: "GET",
+      path: "/oidc/:id/start",
+      handle: async ({ res, url, params }) => {
+        const p = provider(params[0]!);
+        const s = await oidc.start(p);
+        const id = createChallenge("oidc", null, { provider: p.id, verifier: s.verifier, state: s.state, nonce: s.nonce, return: safeReturn(url.searchParams.get("return")) }, 10 * 60_000);
+        res.writeHead(302, { location: s.url, "set-cookie": setCookie(C.oidc, id, 600), "cache-control": "no-store" }).end();
+      },
+    },
+    {
+      method: "GET",
+      path: "/oidc/:id/callback",
+      handle: async ({ req, res, url, params }) => {
+        const redirect = (location: string, cookies: string[]) => res.writeHead(302, { location, "set-cookie": cookies, "cache-control": "no-store" }).end();
+        const ch = readChallenge(parseCookies(req.headers.cookie)[C.oidc], "oidc");
+        if (ch) dropChallenge(ch.idHash);
+        try {
+          const p = provider(params[0]!);
+          // The state cookie ties the answer to the browser that started; without it anyone could log you in as them.
+          if (!ch || ch.data.provider !== p.id) throw new AuthError(400, "invalid-body", "The sign-in took too long or was started in another browser. Try again.");
+          if (url.searchParams.get("error")) throw new AuthError(401, "invalid-credentials", `${p.name}: ${url.searchParams.get("error_description") ?? url.searchParams.get("error")}`);
+          const claims = await oidc
+            .finish(p, new URL(`${origin}${url.pathname}${url.search}`), { verifier: String(ch.data.verifier), state: String(ch.data.state), nonce: String(ch.data.nonce) })
+            .catch((err: Error) => {
+              throw new AuthError(401, "invalid-credentials", `${p.name} sign-in could not be verified: ${err.message}`);
+            });
+          const user = oidcUser(p, claims, clientIp(req));
+          redirect(String(ch.data.return), [startSession(req, user, `oidc:${p.id}`, false), clearCookie(C.oidc)]);
+        } catch (err) {
+          if (!(err instanceof AuthError)) throw err;
+          redirect(links.signIn(err.message), [clearCookie(C.oidc)]);
+        }
+      },
+    },
+
+    {
+      method: "POST",
+      path: "/logout",
+      handle: ({ req, res }) => {
+        const s = session(req);
+        if (s) {
+          checkOrigin(req);
+          db.prepare("DELETE FROM auth_sessions WHERE id = ?").run(s.sessionId);
+          emit({ type: "sign-out", actor: s.user.id, ip: clientIp(req) });
+        }
+        ok(res, undefined, { "set-cookie": clearCookie(C.session) });
+      },
+    },
+
+    // Invitations and password resets: a one-time link sets the password.
+    {
+      method: "GET",
+      path: "/links/:token",
+      handle: ({ params }) => {
+        const ch = readChallenge(params[0], "invite") ?? readChallenge(params[0], "reset");
+        if (!ch?.userId) throw new AuthError(404, "not-found", "This link is used or expired. Ask an admin for a new one.");
+        const u = userRow(ch.userId)!;
+        return { kind: ch.data.kind, email: u.email, name: u.name, productName };
+      },
+    },
+    {
+      method: "POST",
+      path: "/links/:token",
+      handle: async ({ req, res, params, body }) => {
+        checkOrigin(req);
+        const ch = readChallenge(params[0], "invite") ?? readChallenge(params[0], "reset");
+        if (!ch?.userId) throw new AuthError(404, "not-found", "This link is used or expired. Ask an admin for a new one.");
+        const b = await body();
+        const hash = await hashPassword(newPassword(b));
+        const u = userRow(ch.userId)!;
+        if (u.status === "disabled") throw new AuthError(403, "forbidden", "Your account is disabled.");
+        const name = str(b, "name", { max: 128, optional: true })?.trim() || u.name;
+        db.prepare("UPDATE auth_users SET password_hash = ?, name = ?, status = 'active' WHERE id = ?").run(hash, name, u.id);
+        dropChallenge(ch.idHash);
+        revokeSessions(u.id);
+        emit({ type: "password-changed", actor: u.id, ip: clientIp(req), detail: String(ch.data.kind) });
+        signedIn(res, req, userRow(u.id)!, "password", false);
+      },
+    },
+
+    // The signed-in person.
+    {
+      method: "GET",
+      path: "/me",
+      handle: ({ req }) => {
+        const p = sessionPrincipal(req, "viewer", { allowMfaSetup: true });
+        const row = userRow(p.user.id)!;
+        return {
+          user: p.user,
+          session: { id: p.sessionId, method: p.method, mfa: p.mfa },
+          mfaSetupRequired: mfaSetupRequired(row, p.method),
+          hasPassword: !!row.password_hash,
+          passkeys: passkeys(p.user.id).map((k) => ({ id: k.id, name: k.name, createdAt: k.created_at, lastUsedAt: k.last_used_at })),
+          recoveryCodesLeft: (db.prepare("SELECT COUNT(*) AS n FROM auth_recovery_codes WHERE user_id = ? AND used_at IS NULL").get(p.user.id) as { n: number }).n,
+        };
+      },
+    },
+    {
+      method: "PATCH",
+      path: "/me",
+      handle: async ({ req, body }) => {
+        const p = sessionPrincipal(req, "viewer", { allowMfaSetup: true });
+        const name = str(await body(), "name", { max: 128 }).trim();
+        db.prepare("UPDATE auth_users SET name = ? WHERE id = ?").run(name, p.user.id);
+        return toUser(userRow(p.user.id)!);
+      },
+    },
+    {
+      method: "POST",
+      path: "/me/password",
+      handle: async ({ req, res, body }) => {
+        const p = sessionPrincipal(req, "viewer", { allowMfaSetup: true });
+        const b = await body();
+        const row = userRow(p.user.id)!;
+        if (row.password_hash && !(await verifyPassword(str(b, "currentPassword", { max: 256 }), row.password_hash))) {
+          throw new AuthError(401, "invalid-credentials", "The current password is wrong.");
+        }
+        db.prepare("UPDATE auth_users SET password_hash = ? WHERE id = ?").run(await hashPassword(newPassword(b, "newPassword")), row.id);
+        revokeSessions(row.id, p.sessionId);
+        emit({ type: "password-changed", actor: row.id, ip: clientIp(req) });
+        ok(res);
+      },
+    },
+    {
+      method: "GET",
+      path: "/me/sessions",
+      handle: ({ req }) => {
+        const p = sessionPrincipal(req, "viewer", { allowMfaSetup: true });
+        const rows = db
+          .prepare("SELECT id, method, ip, user_agent, created_at, last_seen_at FROM auth_sessions WHERE user_id = ? AND expires_at > ? ORDER BY last_seen_at DESC")
+          .all(p.user.id, iso()) as Array<{ id: string; method: string; ip: string; user_agent: string; created_at: string; last_seen_at: string }>;
+        return {
+          sessions: rows.map((r) => ({ id: r.id, method: r.method, ip: r.ip, userAgent: r.user_agent, createdAt: r.created_at, lastSeenAt: r.last_seen_at, current: r.id === p.sessionId })),
+        };
+      },
+    },
+    {
+      method: "DELETE",
+      path: "/me/sessions/:id",
+      handle: ({ req, res, params }) => {
+        const p = sessionPrincipal(req, "viewer", { allowMfaSetup: true });
+        const r = db.prepare("DELETE FROM auth_sessions WHERE id = ? AND user_id = ?").run(params[0]!, p.user.id);
+        if (r.changes === 0) throw new AuthError(404, "not-found", "No such session.");
+        ok(res, undefined, params[0] === p.sessionId ? { "set-cookie": clearCookie(C.session) } : undefined);
+      },
+    },
+
+    // Authenticator app.
+    {
+      method: "POST",
+      path: "/me/totp",
+      handle: ({ req }) => {
+        const p = sessionPrincipal(req, "viewer", { allowMfaSetup: true });
+        if (hasTotp(p.user.id)) throw new AuthError(409, "conflict", "An authenticator app is already set up. Remove it first.");
+        const secret = base32(randomBytes(20));
+        db.prepare("INSERT INTO auth_totp (user_id, secret, created_at) VALUES (?, ?, ?) ON CONFLICT (user_id) DO UPDATE SET secret = excluded.secret, created_at = excluded.created_at").run(
+          p.user.id,
+          secrets.seal(secret),
+          iso(),
+        );
+        const label = encodeURIComponent(`${productName}:${p.user.email}`);
+        return { secret, uri: `otpauth://totp/${label}?secret=${secret}&issuer=${encodeURIComponent(productName)}&algorithm=SHA1&digits=6&period=30` };
+      },
+    },
+    {
+      method: "POST",
+      path: "/me/totp/confirm",
+      handle: async ({ req, body }) => {
+        const p = sessionPrincipal(req, "viewer", { allowMfaSetup: true });
+        const row = db.prepare("SELECT secret FROM auth_totp WHERE user_id = ? AND confirmed = 0").get(p.user.id) as { secret: string } | undefined;
+        if (!row) throw new AuthError(404, "not-found", "Start setting up the authenticator app first.");
+        const step = matchTotp(fromBase32(secrets.open(row.secret)), str(await body(), "code", { max: 16 }), now());
+        if (step === null) throw new AuthError(422, "invalid-body", "That code is not valid. Check the time on your phone.");
+        db.prepare("UPDATE auth_totp SET confirmed = 1, last_step = ? WHERE user_id = ?").run(step, p.user.id);
+        return { recoveryCodes: factorAdded(p, req, "totp") };
+      },
+    },
+    {
+      method: "DELETE",
+      path: "/me/totp",
+      handle: ({ req, res }) => {
+        const p = sessionPrincipal(req, "viewer", { allowMfaSetup: true });
+        requireStrongSession(p);
+        if (db.prepare("DELETE FROM auth_totp WHERE user_id = ?").run(p.user.id).changes === 0) throw new AuthError(404, "not-found", "No authenticator app is set up.");
+        factorRemoved(p.user.id);
+        emit({ type: "mfa-removed", actor: p.user.id, method: "totp", ip: clientIp(req) });
+        ok(res);
+      },
+    },
+    {
+      method: "POST",
+      path: "/me/recovery-codes",
+      handle: ({ req }) => {
+        const p = sessionPrincipal(req, "viewer", { allowMfaSetup: true });
+        requireStrongSession(p);
+        if (!hasMfa(p.user.id)) throw new AuthError(409, "conflict", "Add an authenticator app or a passkey first.");
+        return { recoveryCodes: newRecoveryCodes(p.user.id) };
+      },
+    },
+
+    // Passkeys.
+    {
+      method: "POST",
+      path: "/me/passkeys/options",
+      handle: async ({ req, res }) => {
+        const p = sessionPrincipal(req, "viewer", { allowMfaSetup: true });
+        const options = await generateRegistrationOptions({
+          rpName: productName,
+          rpID,
+          userName: p.user.email,
+          userDisplayName: p.user.name,
+          userID: new TextEncoder().encode(p.user.id),
+          attestationType: "none",
+          excludeCredentials: passkeys(p.user.id).map((k) => ({ id: k.id, transports: JSON.parse(k.transports) as AuthenticatorTransport[] })),
+          authenticatorSelection: { residentKey: "required", userVerification: "preferred" },
+        });
+        const id = createChallenge("webauthn-register", p.user.id, { challenge: options.challenge }, 5 * 60_000);
+        ok(res, options, { "set-cookie": setCookie(C.webauthn, id, 300) });
+      },
+    },
+    {
+      method: "POST",
+      path: "/me/passkeys",
+      handle: async ({ req, res, body }) => {
+        const p = sessionPrincipal(req, "viewer", { allowMfaSetup: true });
+        const ch = readChallenge(parseCookies(req.headers.cookie)[C.webauthn], "webauthn-register");
+        if (!ch || ch.userId !== p.user.id) throw new AuthError(400, "invalid-body", "The passkey request expired. Try again.");
+        dropChallenge(ch.idHash);
+        const b = await body();
+        const name = str(b, "name", { max: 64, optional: true })?.trim() || "Passkey";
+        const v = await verifyRegistrationResponse({
+          response: b.response as RegistrationResponseJSON,
+          expectedChallenge: String(ch.data.challenge),
+          expectedOrigin: [...allowedOrigins],
+          expectedRPID: rpID,
+          requireUserVerification: false,
+        }).catch((err: Error) => {
+          throw new AuthError(422, "invalid-body", `The passkey could not be verified: ${err.message}`);
+        });
+        if (!v.verified) throw new AuthError(422, "invalid-body", "The passkey could not be verified.");
+        const c = v.registrationInfo.credential;
+        db.prepare("INSERT INTO auth_passkeys (id, user_id, name, public_key, counter, transports, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
+          c.id,
+          p.user.id,
+          name,
+          c.publicKey,
+          c.counter,
+          JSON.stringify(c.transports ?? []),
+          iso(),
+        );
+        const codes = factorAdded(p, req, "passkey");
+        sendJson(res, 201, { passkey: { id: c.id, name, createdAt: iso() }, recoveryCodes: codes }, { "set-cookie": clearCookie(C.webauthn) });
+      },
+    },
+    {
+      method: "DELETE",
+      path: "/me/passkeys/:id",
+      handle: ({ req, res, params }) => {
+        const p = sessionPrincipal(req, "viewer", { allowMfaSetup: true });
+        requireStrongSession(p);
+        if (db.prepare("DELETE FROM auth_passkeys WHERE id = ? AND user_id = ?").run(params[0]!, p.user.id).changes === 0) throw new AuthError(404, "not-found", "No such passkey.");
+        factorRemoved(p.user.id);
+        emit({ type: "mfa-removed", actor: p.user.id, method: "passkey", ip: clientIp(req) });
+        ok(res);
+      },
+    },
+
+    // Members (Settings → Members).
+    {
+      method: "GET",
+      path: "/members",
+      handle: ({ req }) => {
+        authorize(req, "admin");
+        const rows = db.prepare("SELECT * FROM auth_users ORDER BY name COLLATE NOCASE").all() as unknown as UserRow[];
+        return { members: rows.map(toUser) };
+      },
+    },
+    {
+      method: "POST",
+      path: "/members",
+      handle: async ({ req, res, body }) => {
+        const p = sessionPrincipal(req, "admin");
+        const b = await body();
+        const role = memberRole(b);
+        mayManage(p.role, role);
+        const email = readEmail(b);
+        if (userByEmail(email)) throw new AuthError(409, "conflict", `${email} is already a member.`);
+        const user = insertUser({ email, name: str(b, "name", { max: 128, optional: true })?.trim() || email, role, status: "invited" });
+        const token = createChallenge("invite", user.id, { kind: "invite" }, 7 * 86_400_000);
+        emit({ type: "member-invited", actor: p.user.id, target: user.id, ip: clientIp(req), detail: role });
+        sendJson(res, 201, { member: toUser(user), link: links.password(token), linkExpiresAt: iso(now() + 7 * 86_400_000) });
+      },
+    },
+    {
+      method: "PATCH",
+      path: "/members/:id",
+      handle: async ({ req, params, body }) => {
+        const p = sessionPrincipal(req, "admin");
+        const target = member(params[0]!);
+        mayManage(p.role, target.role);
+        const b = await body();
+        const changes: string[] = [];
+        if (b.role !== undefined) {
+          const role = memberRole(b);
+          mayManage(p.role, role);
+          if (target.role === "owner" && role !== "owner" && activeOwnersExcept(target.id) === 0) throw new AuthError(409, "conflict", "There must be at least one owner.");
+          db.prepare("UPDATE auth_users SET role = ? WHERE id = ?").run(role, target.id);
+          changes.push(`role ${target.role} -> ${role}`);
+        }
+        if (b.status !== undefined) {
+          if (b.status !== "active" && b.status !== "disabled") throw new AuthError(422, "invalid-body", "status must be active or disabled.");
+          if (target.status === "invited") throw new AuthError(409, "conflict", "An invited member becomes active by accepting the invitation.");
+          if (b.status === "disabled") {
+            if (target.id === p.user.id) throw new AuthError(409, "conflict", "You cannot disable yourself.");
+            if (target.role === "owner" && activeOwnersExcept(target.id) === 0) throw new AuthError(409, "conflict", "There must be at least one owner.");
+            revokeSessions(target.id);
+          }
+          db.prepare("UPDATE auth_users SET status = ? WHERE id = ?").run(b.status, target.id);
+          changes.push(`status ${target.status} -> ${b.status}`);
+        }
+        if (changes.length) emit({ type: "member-updated", actor: p.user.id, target: target.id, ip: clientIp(req), detail: changes.join(", ") });
+        return toUser(userRow(target.id)!);
+      },
+    },
+    {
+      method: "DELETE",
+      path: "/members/:id",
+      handle: ({ req, res, params }) => {
+        const p = sessionPrincipal(req, "admin");
+        const target = member(params[0]!);
+        mayManage(p.role, target.role);
+        if (target.id === p.user.id) throw new AuthError(409, "conflict", "You cannot remove yourself.");
+        if (target.role === "owner" && activeOwnersExcept(target.id) === 0) throw new AuthError(409, "conflict", "There must be at least one owner.");
+        db.prepare("DELETE FROM auth_users WHERE id = ?").run(target.id);
+        emit({ type: "member-removed", actor: p.user.id, target: target.id, ip: clientIp(req), detail: target.email });
+        ok(res);
+      },
+    },
+    // A new password link for someone who forgot theirs, and a reset of their second factors. There is no email
+    // yet, so the admin passes the link on.
+    {
+      method: "POST",
+      path: "/members/:id/reset",
+      handle: async ({ req, res, params, body }) => {
+        const p = sessionPrincipal(req, "admin");
+        const target = member(params[0]!);
+        mayManage(p.role, target.role);
+        if (target.id === p.user.id) throw new AuthError(409, "conflict", "Change your own password and factors under your account.");
+        const b = await body();
+        const mfa = b.mfa === true;
+        revokeSessions(target.id);
+        if (mfa) {
+          db.prepare("DELETE FROM auth_totp WHERE user_id = ?").run(target.id);
+          db.prepare("DELETE FROM auth_passkeys WHERE user_id = ?").run(target.id);
+          db.prepare("DELETE FROM auth_recovery_codes WHERE user_id = ?").run(target.id);
+          emit({ type: "mfa-removed", actor: p.user.id, target: target.id, ip: clientIp(req), detail: "reset by admin" });
+        }
+        const kind = target.status === "invited" ? "invite" : "reset";
+        db.prepare("DELETE FROM auth_challenges WHERE user_id = ? AND kind = ?").run(target.id, kind);
+        const token = createChallenge(kind, target.id, { kind }, 86_400_000);
+        emit({ type: "member-updated", actor: p.user.id, target: target.id, ip: clientIp(req), detail: mfa ? "password link and second factors reset" : "password link" });
+        sendJson(res, 200, { link: links.password(token), linkExpiresAt: iso(now() + 86_400_000) });
+      },
+    },
+
+    // API tokens (ADR 0003): scoped to this product and one role, always with an expiry, shown once.
+    {
+      method: "GET",
+      path: "/tokens",
+      handle: ({ req }) => {
+        authorize(req, "admin");
+        const rows = db
+          .prepare("SELECT t.*, u.email AS creator FROM auth_tokens t LEFT JOIN auth_users u ON u.id = t.created_by ORDER BY t.created_at DESC")
+          .all() as Array<{ id: string; name: string; role: Role; creator: string | null; created_at: string; expires_at: string; last_used_at: string | null }>;
+        return {
+          tokens: rows.map((r) => ({ id: r.id, name: r.name, role: r.role, createdBy: r.creator, createdAt: r.created_at, expiresAt: r.expires_at, lastUsedAt: r.last_used_at, expired: r.expires_at <= iso() })),
+        };
+      },
+    },
+    {
+      method: "POST",
+      path: "/tokens",
+      handle: async ({ req, res, body }) => {
+        const p = sessionPrincipal(req, "admin");
+        const b = await body();
+        const name = str(b, "name", { max: 64 }).trim();
+        const role = b.role;
+        if (role !== "admin" && role !== "editor" && role !== "viewer") throw new AuthError(422, "invalid-body", "role must be admin, editor or viewer.");
+        if (!atLeast(p.role, role)) throw new AuthError(403, "forbidden", "A token cannot have a higher role than yours.");
+        const days = b.expiresInDays ?? 90;
+        if (typeof days !== "number" || !Number.isInteger(days) || days < 1 || days > 366) throw new AuthError(422, "invalid-body", "expiresInDays must be a whole number from 1 to 366.");
+        const secret = `oa_${product}_${randomToken()}`;
+        const id = randomUUID();
+        const expiresAt = iso(now() + days * 86_400_000);
+        db.prepare("INSERT INTO auth_tokens (id, secret_hash, name, role, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(id, sha256(secret), name, role, p.user.id, iso(), expiresAt);
+        emit({ type: "token-created", actor: p.user.id, target: id, ip: clientIp(req), detail: `${name} (${role}, ${days} days)` });
+        sendJson(res, 201, { id, name, role, expiresAt, token: secret });
+      },
+    },
+    {
+      method: "DELETE",
+      path: "/tokens/:id",
+      handle: ({ req, res, params }) => {
+        const p = sessionPrincipal(req, "admin");
+        if (db.prepare("DELETE FROM auth_tokens WHERE id = ?").run(params[0]!).changes === 0) throw new AuthError(404, "not-found", "No such token.");
+        emit({ type: "token-revoked", actor: p.user.id, target: params[0], ip: clientIp(req) });
+        ok(res);
+      },
+    },
+  ];
+
+  const compiled = routes.map((r) => ({ ...r, re: new RegExp(`^${PREFIX}${r.path.replace(/:[a-z]+/g, "([^/]+)")}$`) }));
+
+  return {
+    /** Answers requests under /api/v1/auth and returns true; returns false for every other path. */
+    async handle(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
+      const url = new URL(req.url ?? "/", "http://localhost");
+      if (!url.pathname.startsWith(`${PREFIX}/`)) return false;
+      for (const r of compiled) {
+        const m = url.pathname.match(r.re);
+        if (!m || r.method !== req.method) continue;
+        try {
+          const result = await r.handle({ req, res, url, params: m.slice(1).map(decodeURIComponent), body: () => readJson(req) });
+          if (!res.headersSent) result === undefined ? ok(res) : ok(res, result);
+        } catch (err) {
+          if (!(err instanceof AuthError)) throw err;
+          sendProblem(res, err);
+          if (!req.complete) req.resume();
+        }
+        return true;
+      }
+      sendProblem(res, new AuthError(404, "not-found"));
+      return true;
+    },
+
+    authorize,
+
+    /** Route names for metrics: the matched pattern, never ids or tokens. */
+    routeName(req: IncomingMessage): string | undefined {
+      const path = new URL(req.url ?? "/", "http://localhost").pathname;
+      const r = compiled.find((c) => c.method === req.method && c.re.test(path));
+      return r && PREFIX + r.path;
+    },
+
+    /**
+     * On first start, a one-time link that creates the owner (ADR 0013). Returns undefined once someone exists.
+     * Every call replaces the previous link, so only the latest one printed works.
+     */
+    setupLink(): string | undefined {
+      if (userCount() > 0) return undefined;
+      db.prepare("DELETE FROM auth_challenges WHERE kind = 'setup'").run();
+      return links.setup(createChallenge("setup", null, {}, 7 * 86_400_000));
+    },
+
+    /** Deletes expired sessions and challenges. Call it every few minutes. */
+    purge() {
+      const t = iso();
+      db.prepare("DELETE FROM auth_sessions WHERE expires_at <= ? OR last_seen_at <= ?").run(t, iso(now() - idleMs));
+      db.prepare("DELETE FROM auth_challenges WHERE expires_at <= ?").run(t);
+    },
+
+    /** True when TOTP secrets are stored in clear because no secrets key was given. */
+    secretsInClear: !opts.secretsKey,
+  };
+}
+
+export type Auth = ReturnType<typeof createAuth>;
