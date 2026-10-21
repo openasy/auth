@@ -81,7 +81,7 @@ sign-in. `test/contract.test.ts` checks every response against it. Each product 
 environment with `oidcFromEnv(process.env, "VULNS_")` and the secrets key with `readSecretsKey(path)`.
 
 ```tsx
-import { AuthGate, AccountSettings, MembersSettings, TokensSettings, useAuth } from "@openasy/auth/react";
+import { AuthGate, AccountSettings, MembersSettings, SignInSettings, TokensSettings, useAuth } from "@openasy/auth/react";
 
 <BrandProvider brand={{ name: "OpenAsy" }}>
   <AuthGate product="OpenAsy Vulnerabilities">
@@ -89,6 +89,11 @@ import { AuthGate, AccountSettings, MembersSettings, TokensSettings, useAuth } f
   </AuthGate>
 </BrandProvider>;
 ```
+
+Settings pages: `AccountSettings` for everyone, `MembersSettings` and `TokensSettings` for admins, and
+`SignInSettings` for identity providers: admins see them, owners add them from a preset with that provider's steps and
+redirect URI, check the issuer and map groups to roles. With a provider set up, the first-start setup page also offers
+to become the owner through it.
 
 In the web UI, `@openasy/auth/client` calls the same routes, including the browser's passkey prompts:
 

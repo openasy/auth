@@ -59,6 +59,42 @@ export interface ApiToken {
 }
 
 /** A failed call, with the stable problem code from the API (`invalid-credentials`, `mfa-setup-required`...). */
+/** An identity provider as Settings → Sign-in shows it. The client secret is never sent back. */
+export interface Provider {
+  id: string;
+  name: string;
+  preset: string;
+  source: "settings" | "environment";
+  enabled: boolean;
+  issuer: string;
+  clientId: string;
+  hasClientSecret: boolean;
+  scopes: string[];
+  groupsClaim: string | null;
+  roleMapping: Record<string, Role>;
+  defaultRole: Role | null;
+  allowedDomains: string[];
+  redirectUri: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+/** What to add or change; fields left out keep their value. `clientSecret: null` removes it. */
+export interface ProviderChange {
+  preset?: string;
+  id?: string;
+  name?: string;
+  issuer?: string;
+  clientId?: string;
+  clientSecret?: string | null;
+  scopes?: string[];
+  groupsClaim?: string | null;
+  roleMapping?: Record<string, Role>;
+  defaultRole?: Role | null;
+  allowedDomains?: string[];
+  enabled?: boolean;
+}
+
 export class AuthApiError extends Error {
   readonly status: number;
   readonly code: string;
@@ -99,6 +135,10 @@ export const auth = {
     const response = await startAuthentication({ optionsJSON });
     return call<SignInResult & { status: "signed-in" }>("/login/passkey", { body: { response } });
   },
+  /** With the one-time setup link: the person becomes the owner through the provider. */
+  setupWith(providerId: string, token: string) {
+    location.assign(`${BASE}/oidc/${encodeURIComponent(providerId)}/start?setup=${encodeURIComponent(token)}`);
+  },
   /** Full-page navigation to the identity provider; the browser comes back signed in. */
   signInWith(providerId: string, returnTo = location.pathname + location.hash) {
     location.assign(`${BASE}/oidc/${encodeURIComponent(providerId)}/start?return=${encodeURIComponent(returnTo)}`);
@@ -136,6 +176,12 @@ export const auth = {
   /** The secret is in `token` and is never shown again. */
   createToken: (b: { name: string; role: ApiToken["role"]; expiresInDays?: number }) => call<{ id: string; name: string; role: ApiToken["role"]; expiresAt: string; token: string }>("/tokens", { body: b }),
   revokeToken: (id: string) => call<void>(`/tokens/${encodeURIComponent(id)}`, { method: "DELETE" }),
+
+  providers: () => call<{ providers: Provider[]; redirectUriTemplate: string }>("/providers"),
+  addProvider: (b: ProviderChange) => call<Provider>("/providers", { body: b }),
+  updateProvider: (id: string, b: ProviderChange) => call<Provider>(`/providers/${encodeURIComponent(id)}`, { method: "PATCH", body: b }),
+  removeProvider: (id: string) => call<void>(`/providers/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  discoverProvider: (issuer: string) => call<{ issuer: string; authorizationEndpoint: string | null; userinfoEndpoint: string | null; scopes: string[] | null; pkce: boolean }>("/providers/discover", { body: { issuer } }),
 };
 
 /**

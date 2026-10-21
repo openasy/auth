@@ -1,12 +1,13 @@
 // Screens for @openasy/auth, built from @openasy/ui: the sign-in gate around a product's UI, and the Account, Members
 // and API tokens settings. They follow the Identity/Sign-in stories in the ui Storybook.
-import { Badge, Button, Callout, Panel, SelectField, TextField, useBrand } from "@openasy/ui";
-import { ArrowLeft, Copy, Download, Fingerprint, KeyRound, LogIn, Plus, ShieldCheck, Smartphone, Trash2 } from "lucide-react";
+import { Badge, Button, Callout, Panel, SelectField, Switch, TextField, useBrand } from "@openasy/ui";
+import { ArrowLeft, Copy, Download, Fingerprint, KeyRound, LogIn, Pencil, Plus, ShieldCheck, Smartphone, Trash2 } from "lucide-react";
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ClipboardEvent, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { encode } from "uqr";
-import { auth, AuthApiError, passkeysSupported, takeAuthParams, type ApiToken, type Me, type Member, type Methods, type Role, type Session } from "./client.ts";
+import { auth, AuthApiError, passkeysSupported, takeAuthParams, type ApiToken, type Me, type Member, type Methods, type Provider, type ProviderChange, type Role, type Session } from "./client.ts";
+import { PRESETS } from "./presets.ts";
 
-export { auth, AuthApiError, type Me, type Member, type Role } from "./client.ts";
+export { auth, AuthApiError, type Me, type Member, type Provider, type Role } from "./client.ts";
 
 const ROLE_NAMES: Record<Role, string> = { owner: "Owner", admin: "Admin", editor: "Editor", viewer: "Viewer" };
 const RANK: Role[] = ["viewer", "editor", "admin", "owner"];
@@ -462,7 +463,7 @@ function MfaSetup({ productName, onDone, onSignOut }: { productName: string; onD
   );
 }
 
-function Setup({ token, onDone }: { token: string; onDone: () => void }) {
+function Setup({ token, methods, onDone }: { token: string; methods: Methods; onDone: () => void }) {
   const productName = useProductName();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -480,16 +481,30 @@ function Setup({ token, onDone }: { token: string; onDone: () => void }) {
   };
   return (
     <AuthLayout>
-      <Heading title={`Set up ${productName}`}>Create the owner account. You can invite others afterwards.</Heading>
+      <Heading title={`Set up ${productName}`}>
+        {methods.passwords ? "Create the owner account. You can invite others afterwards." : "Sign in to become the owner. You can invite others afterwards."}
+      </Heading>
       <Problem error={error} title="Not created" />
-      <form className="flex flex-col gap-2.5" onSubmit={submit}>
-        <TextField label="Name" autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} />
-        <TextField label="Email" type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} />
-        <PasswordFields password={password} setPassword={setPassword} confirm={confirm} setConfirm={setConfirm} />
-        <Button type="submit" variant="primary" className="w-full" disabled={!name.trim() || !email || !passwordOk(password, confirm)}>
-          Create owner
-        </Button>
-      </form>
+      {methods.passwords && (
+        <form className="flex flex-col gap-2.5" onSubmit={submit}>
+          <TextField label="Name" autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} />
+          <TextField label="Email" type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} />
+          <PasswordFields password={password} setPassword={setPassword} confirm={confirm} setConfirm={setConfirm} />
+          <Button type="submit" variant="primary" className="w-full" disabled={!name.trim() || !email || !passwordOk(password, confirm)}>
+            Create owner
+          </Button>
+        </form>
+      )}
+      {methods.passwords && methods.providers.length > 0 && <Divider>or</Divider>}
+      {methods.providers.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          {methods.providers.map((p) => (
+            <Button key={p.id} className="w-full" variant={methods.passwords ? "secondary" : "primary"} icon={<KeyRound />} onClick={() => auth.setupWith(p.id, token)}>
+              Continue with {p.name}
+            </Button>
+          ))}
+        </div>
+      )}
     </AuthLayout>
   );
 }
@@ -617,7 +632,7 @@ function Gate({ children }: { children: ReactNode }) {
     case "loading":
       return null;
     case "setup":
-      return <Setup token={stage.token} onDone={reload} />;
+      return <Setup token={stage.token} methods={methods!} onDone={reload} />;
     case "setup-pending":
       return <SetupPending />;
     case "link":
@@ -1080,6 +1095,262 @@ export function TokensSettings() {
             </tr>
           ))}
         </Table>
+      </Panel>
+    </div>
+  );
+}
+
+// ---- Sign-in ------------------------------------------------------------------------------------------------------
+
+const fieldClass = "w-full rounded-md border border-line-strong bg-surface px-2.5 py-1.5 font-mono text-sm text-fg placeholder:text-fg-subtle";
+
+/** "group = role" per line, as people write it, to the role mapping the API takes. */
+function parseMapping(text: string): Record<string, Role> {
+  const out: Record<string, Role> = {};
+  for (const line of text.split("\n").map((l) => l.trim()).filter(Boolean)) {
+    const i = line.lastIndexOf("=");
+    const group = line.slice(0, i).trim();
+    const role = line.slice(i + 1).trim().toLowerCase();
+    if (i < 1 || !group || !(RANK as string[]).includes(role)) throw new Error(`"${line}" must look like group = role, with owner, admin, editor or viewer.`);
+    out[group] = role as Role;
+  }
+  return out;
+}
+
+const mappingText = (m: Record<string, Role>) =>
+  Object.entries(m)
+    .map(([g, r]) => `${g} = ${r}`)
+    .join("\n");
+
+function ProviderForm({ editing, template, onSaved, onCancel }: { editing?: Provider; template: string; onSaved: () => void; onCancel: () => void }) {
+  const [presetId, setPresetId] = useState(editing?.preset ?? "keycloak");
+  const p = PRESETS.find((x) => x.id === presetId) ?? PRESETS[PRESETS.length - 1]!;
+  const [id, setId] = useState(editing?.id ?? "");
+  const [name, setName] = useState(editing?.name ?? "");
+  const [issuer, setIssuer] = useState(editing?.issuer ?? "");
+  const [clientId, setClientId] = useState(editing?.clientId ?? "");
+  const [clientSecret, setClientSecret] = useState("");
+  const [groupsClaim, setGroupsClaim] = useState(editing ? (editing.groupsClaim ?? "") : (p.groupsClaim ?? ""));
+  const [mapping, setMapping] = useState(editing ? mappingText(editing.roleMapping) : "");
+  const [defaultRole, setDefaultRole] = useState<Role | "">(editing?.defaultRole ?? "");
+  const [domains, setDomains] = useState(editing?.allowedDomains.join(", ") ?? "");
+  const [enabled, setEnabled] = useState(editing?.enabled ?? true);
+  const [check, setCheck] = useState<{ ok: boolean; text: string }>();
+  const [error, setError] = useState<string>();
+  const [busy, setBusy] = useState(false);
+  const redirectUri = editing?.redirectUri ?? template.replace("{id}", id || p.id);
+
+  const choose = (next: string) => {
+    const n = PRESETS.find((x) => x.id === next)!;
+    setPresetId(next);
+    setGroupsClaim(n.groupsClaim ?? "");
+    setCheck(undefined);
+  };
+  const discover = async () => {
+    setCheck(undefined);
+    try {
+      const d = await auth.discoverProvider(issuer.trim());
+      setCheck(d.pkce ? { ok: true, text: `${d.issuer} answers.` } : { ok: false, text: `${d.issuer} answers, but does not list PKCE with S256, which sign-in uses.` });
+    } catch (err) {
+      setCheck({ ok: false, text: message(err) });
+    }
+  };
+  const save = async (e: FormEvent) => {
+    e.preventDefault();
+    setError(undefined);
+    setBusy(true);
+    try {
+      const body: ProviderChange = {
+        name: name.trim() || p.name,
+        issuer: issuer.trim(),
+        clientId: clientId.trim(),
+        groupsClaim: groupsClaim.trim() || null,
+        roleMapping: parseMapping(mapping),
+        defaultRole: defaultRole || null,
+        allowedDomains: domains
+          .split(",")
+          .map((d) => d.trim())
+          .filter(Boolean),
+        enabled,
+        ...(clientSecret && { clientSecret }),
+      };
+      if (editing) await auth.updateProvider(editing.id, body);
+      else await auth.addProvider({ ...body, preset: presetId, ...(id.trim() && { id: id.trim() }) });
+      onSaved();
+    } catch (err) {
+      setError(message(err));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Panel title={editing ? `Change ${editing.name}` : "Add an identity provider"} description="People sign in through it as well as with passwords and passkeys.">
+      <form className="flex flex-col gap-4" onSubmit={save}>
+        {!editing && (
+          <SelectField label="Provider" value={presetId} onChange={(e) => choose(e.target.value)} options={PRESETS.map((x) => ({ value: x.id, label: x.id === "generic" ? "Another OpenID Connect provider" : x.name }))} />
+        )}
+        <div className="flex flex-col gap-2 rounded-md bg-canvas p-3 text-sm">
+          <span className="font-medium text-fg">At {p.id === "generic" ? "your provider" : p.name}</span>
+          <ol className="m-0 flex list-decimal flex-col gap-1 pl-5 text-fg-muted">
+            {p.steps.map((s) => (
+              <li key={s}>{s.replace("{redirectUri}", redirectUri)}</li>
+            ))}
+          </ol>
+          <span className="flex flex-wrap items-center gap-2">
+            <code className="rounded bg-surface px-1.5 py-0.5 font-mono text-xs text-fg" style={{ overflowWrap: "anywhere" }}>
+              {redirectUri}
+            </code>
+            <Button size="xs" type="button" icon={<Copy />} onClick={() => copy(redirectUri)}>
+              Copy redirect URI
+            </Button>
+            <a href={p.docs} target="_blank" rel="noreferrer" className="text-xs">
+              {p.name} documentation
+            </a>
+          </span>
+          {p.notes?.map((n) => (
+            <span key={n} className="text-xs text-fg-muted">
+              {n}
+            </span>
+          ))}
+        </div>
+        <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(16rem, 1fr))" }}>
+          <TextField label="Name on the button" placeholder={p.name} value={name} onChange={(e) => setName(e.target.value)} />
+          {!editing && <TextField label="Id" mono placeholder={p.id} hint="Part of the redirect URI; it cannot change later." value={id} onChange={(e) => setId(e.target.value.toLowerCase())} />}
+          <TextField
+            label="Issuer"
+            mono
+            placeholder={p.issuerExample}
+            value={issuer}
+            onChange={(e) => (setIssuer(e.target.value), setCheck(undefined))}
+            error={check && !check.ok ? check.text : undefined}
+            hint={check?.ok ? check.text : "The address in the provider's discovery document."}
+            adornment={
+              <Button size="xs" type="button" variant="ghost" disabled={!issuer.trim()} onClick={() => void discover()}>
+                Check
+              </Button>
+            }
+          />
+          <TextField label="Client ID" mono value={clientId} onChange={(e) => setClientId(e.target.value)} />
+          <TextField
+            label="Client secret"
+            type="password"
+            autoComplete="off"
+            value={clientSecret}
+            placeholder={editing?.hasClientSecret ? "Leave empty to keep it" : ""}
+            hint="Kept encrypted; it is never shown again."
+            onChange={(e) => setClientSecret(e.target.value)}
+          />
+          <TextField label="Groups claim" mono placeholder="groups" hint="A claim name, or a path such as realm_access.roles." value={groupsClaim} onChange={(e) => setGroupsClaim(e.target.value)} />
+        </div>
+        <div className="flex flex-col gap-1">
+          <label htmlFor="oa-role-mapping" className="text-xs font-medium text-fg">
+            Roles from groups
+          </label>
+          <textarea id="oa-role-mapping" rows={3} className={fieldClass} placeholder={"ops-admins = admin\nstaff = viewer"} value={mapping} onChange={(e) => setMapping(e.target.value)} />
+          <span className="text-xs text-fg-muted">One group = role per line. With a mapping, groups decide the role on every sign-in and people in none of them are refused.</span>
+        </div>
+        <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(16rem, 1fr))" }}>
+          <SelectField
+            label="People nobody invited"
+            value={defaultRole}
+            onChange={(e) => setDefaultRole(e.target.value as Role | "")}
+            options={[{ value: "", label: "Refused" }, ...RANK.slice(0, 3).map((r) => ({ value: r, label: `Join as ${ROLE_NAMES[r]}` }))]}
+          />
+          <TextField label="Allowed email domains" placeholder="example.com" hint="Comma-separated. For providers where anyone can have an account, such as Google." value={domains} onChange={(e) => setDomains(e.target.value)} />
+        </div>
+        <Switch checked={enabled} onCheckedChange={setEnabled} label="Show on the sign-in page" description="Turned off, nobody can sign in through it, and its settings are kept." />
+        <Problem error={error} title="Not saved" />
+        <span className="flex gap-2">
+          <Button type="submit" variant="primary" loading={busy} disabled={!issuer.trim() || !clientId.trim()}>
+            {editing ? "Save" : "Add provider"}
+          </Button>
+          <Button type="button" variant="ghost" onClick={onCancel}>
+            Cancel
+          </Button>
+        </span>
+      </form>
+    </Panel>
+  );
+}
+
+/** Settings → Sign-in: identity providers (ADR 0033). Admins see them; owners add, change and remove them. */
+export function SignInSettings() {
+  const { me } = useAuth();
+  const isOwner = me.user.role === "owner";
+  const [data, setData] = useState<{ providers: Provider[]; redirectUriTemplate: string }>();
+  const [error, setError] = useState<string>();
+  const [form, setForm] = useState<{ editing?: Provider }>();
+  const reload = useCallback(() => auth.providers().then(setData, (err: unknown) => setError(message(err))), []);
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  const remove = async (p: Provider) => {
+    if (!confirm(`Remove ${p.name}? Nobody can sign in through it any more, and people who did are unlinked from it.`)) return;
+    try {
+      await auth.removeProvider(p.id);
+      await reload();
+    } catch (err) {
+      setError(message(err));
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-4">
+      {!isOwner && (
+        <Callout tone="info" title="Only owners change sign-in">
+          A role mapping can make anyone in a group an owner, so only owners add, change or remove providers.
+        </Callout>
+      )}
+      <Problem error={error} />
+      {form && data ? (
+        <ProviderForm editing={form.editing} template={data.redirectUriTemplate} onSaved={() => (setForm(undefined), void reload())} onCancel={() => setForm(undefined)} />
+      ) : (
+        isOwner && (
+          <span>
+            <Button variant="primary" icon={<Plus />} onClick={() => setForm({})}>
+              Add a provider
+            </Button>
+          </span>
+        )
+      )}
+      <Panel title="Identity providers" description="Keycloak, Microsoft Entra ID, Okta, Google, authentik, ZITADEL, OpenAsy Identity or any OpenID Connect provider." flush>
+        {data?.providers.length === 0 ? (
+          <p className="m-0 px-3 pb-3 text-sm text-fg-muted">None yet: people sign in with a password or a passkey.</p>
+        ) : (
+          <Table label="Identity providers" head={["Name", "Issuer", "Roles from groups", "Status", ""]}>
+            {(data?.providers ?? []).map((p) => (
+              <tr key={p.id}>
+                <Cell>{p.name}</Cell>
+                <Cell mono>{p.issuer}</Cell>
+                <Cell>
+                  {Object.keys(p.roleMapping).length
+                    ? Object.entries(p.roleMapping)
+                        .map(([g, r]) => `${g} → ${ROLE_NAMES[r]}`)
+                        .join(", ")
+                    : p.defaultRole
+                      ? `Everyone joins as ${ROLE_NAMES[p.defaultRole]}`
+                      : "Invited people only"}
+                </Cell>
+                <Cell>
+                  {p.source === "environment" ? <Badge tone="neutral">Environment</Badge> : <Badge tone={p.enabled ? "success" : "neutral"}>{p.enabled ? "On" : "Off"}</Badge>}
+                </Cell>
+                <Cell>
+                  {isOwner && p.source === "settings" && (
+                    <span className="flex gap-1">
+                      <Button size="xs" variant="ghost" icon={<Pencil />} onClick={() => setForm({ editing: p })}>
+                        Change
+                      </Button>
+                      <Button size="xs" variant="ghost" icon={<Trash2 />} onClick={() => void remove(p)}>
+                        Remove
+                      </Button>
+                    </span>
+                  )}
+                </Cell>
+              </tr>
+            ))}
+          </Table>
+        )}
       </Panel>
     </div>
   );
