@@ -80,6 +80,24 @@ export function createOidc(redirectUri: (id: string) => string) {
   }
 
   return {
+    /** Drops what was discovered about a provider, after its settings changed. */
+    forget(id: string) {
+      configs.delete(id);
+    },
+
+    /** Reads a provider's discovery document, to check its issuer before it is saved. */
+    async discover(issuer: string, allowInsecure: boolean) {
+      const cfg = await client.discovery(new URL(issuer), "openasy-check", undefined, undefined, allowInsecure ? { execute: [client.allowInsecureRequests] } : undefined);
+      const m = cfg.serverMetadata();
+      return {
+        issuer: m.issuer,
+        authorizationEndpoint: m.authorization_endpoint ?? null,
+        userinfoEndpoint: m.userinfo_endpoint ?? null,
+        scopes: m.scopes_supported ?? null,
+        pkce: (m.code_challenge_methods_supported ?? []).includes("S256"),
+      };
+    },
+
     /** The IdP URL to send the browser to, and what must be kept until the callback. */
     async start(p: OidcProvider) {
       const cfg = await config(p).catch((err: Error) => {

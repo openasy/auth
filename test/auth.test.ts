@@ -495,6 +495,87 @@ describe("OIDC", () => {
   });
 });
 
+describe("providers under Settings", () => {
+  let idp: Awaited<ReturnType<typeof startIdp>>;
+  let owner: Browser;
+  beforeEach(async () => {
+    idp = await startIdp();
+    await app.close();
+    app = await startProduct({ allowInsecureIssuers: true, secretsKey: randomBytes(32), oidc: [{ id: "env-sso", name: "Env", issuer: "https://env.example.com", clientId: "c" }] });
+    owner = await createOwner(app);
+    await addTotp(app, owner);
+  });
+  afterEach(() => idp.close());
+
+  const add = (b: Browser, body: Record<string, unknown>) => b.json<Record<string, unknown>>("/api/v1/auth/providers", { body });
+  const keycloak = () => ({ preset: "keycloak", issuer: idp.issuer, clientId: "vulns", clientSecret: "s3cret", groupsClaim: "realm_access.roles", roleMapping: { "ops-admin": "admin" } });
+
+  it("adds a provider from a preset, keeps its secret sealed, and signs people in with it", async () => {
+    const r = await add(owner, keycloak());
+    expect(r.status).toBe(201);
+    expect(r.body).toMatchObject({ id: "keycloak", name: "Keycloak", source: "settings", hasClientSecret: true, scopes: ["openid", "email", "profile"], redirectUri: `${app.origin}/api/v1/auth/oidc/keycloak/callback` });
+    expect(JSON.stringify(r.body)).not.toContain("s3cret");
+    const stored = app.db.prepare("SELECT client_secret FROM auth_providers WHERE id = 'keycloak'").get() as { client_secret: string };
+    expect(stored.client_secret).toMatch(/^v1:/);
+
+    const methods = (await app.browser().json<{ providers: unknown[] }>("/api/v1/auth/methods")).body.providers;
+    expect(methods).toEqual([{ id: "env-sso", name: "Env" }, { id: "keycloak", name: "Keycloak" }]);
+    idp.next = { sub: "k1", email: "kim@example.com", email_verified: true, realm_access: { roles: ["ops-admin"] } };
+    const b = app.browser();
+    expect((await oidcSignIn(b, "keycloak")).location).toBe("/");
+    expect((await needs(b, "admin")).status).toBe(200);
+
+    const list = (await owner.json<{ providers: Array<{ id: string; source: string }>; redirectUriTemplate: string }>("/api/v1/auth/providers")).body;
+    expect(list.providers.map((p) => `${p.id}:${p.source}`)).toEqual(["env-sso:environment", "keycloak:settings"]);
+    expect(list.redirectUriTemplate).toBe(`${app.origin}/api/v1/auth/oidc/{id}/callback`);
+  });
+
+  it("lets admins see providers but only owners change them", async () => {
+    const { browser: admin } = await invite(app, owner, "ada@example.com", "admin");
+    await addTotp(app, admin);
+    expect((await admin.json("/api/v1/auth/providers")).status).toBe(200);
+    expect((await add(admin, keycloak())).status).toBe(403);
+    expect((await admin.json("/api/v1/auth/providers/discover", { body: { issuer: idp.issuer } })).status).toBe(403);
+  });
+
+  it("checks what it is given", async () => {
+    expect((await add(owner, { ...keycloak(), preset: "myspace" })).status).toBe(422);
+    expect((await add(owner, { ...keycloak(), scopes: ["email"] })).status).toBe(422);
+    expect((await add(owner, { ...keycloak(), roleMapping: { ops: "god" } })).status).toBe(422);
+    expect((await add(owner, { ...keycloak(), id: "Bad Id" })).status).toBe(422);
+    expect((await add(owner, { ...keycloak(), id: "env-sso" })).status).toBe(409);
+    expect((await add(owner, keycloak())).status).toBe(201);
+    expect((await add(owner, keycloak())).status).toBe(409);
+    expect((await owner.json("/api/v1/auth/providers/env-sso", { method: "PATCH", body: { name: "x" } })).status).toBe(409);
+  });
+
+  it("forgets who signed in through a provider when it is removed or points elsewhere", async () => {
+    await add(owner, { ...keycloak(), roleMapping: {}, defaultRole: "viewer" });
+    idp.next = { sub: "same-sub", email: "kim@example.com", email_verified: true };
+    await oidcSignIn(app.browser(), "keycloak");
+    const linked = () => (app.db.prepare("SELECT COUNT(*) AS n FROM auth_identities WHERE provider = 'keycloak'").get() as { n: number }).n;
+    expect(linked()).toBe(1);
+
+    const patched = await owner.json<Record<string, unknown>>("/api/v1/auth/providers/keycloak", { method: "PATCH", body: { name: "Ops SSO", issuer: `${idp.issuer}/` } });
+    expect(patched.body).toMatchObject({ name: "Ops SSO", hasClientSecret: true });
+    expect(linked()).toBe(0);
+    expect(app.events.map((e) => e.type)).toContain("provider-updated");
+
+    await owner.json("/api/v1/auth/providers/keycloak", { method: "PATCH", body: { issuer: idp.issuer, enabled: false } });
+    expect((await app.browser().json<{ providers: unknown[] }>("/api/v1/auth/methods")).body.providers).toEqual([{ id: "env-sso", name: "Env" }]);
+    expect((await owner.json("/api/v1/auth/providers/keycloak", { method: "DELETE" })).status).toBe(204);
+    expect((await owner.json("/api/v1/auth/providers/keycloak", { method: "DELETE" })).status).toBe(404);
+  });
+
+  it("reads a discovery document before saving", async () => {
+    const ok = await owner.json<Record<string, unknown>>("/api/v1/auth/providers/discover", { body: { issuer: idp.issuer } });
+    expect(ok.body).toMatchObject({ issuer: idp.issuer, pkce: true });
+    const wrong = await owner.json<{ detail: string }>("/api/v1/auth/providers/discover", { body: { issuer: "http://127.0.0.1:9/realms/x" } });
+    expect(wrong.status).toBe(422);
+    expect(wrong.body.detail).toMatch(/No OpenID provider answers/);
+  });
+});
+
 describe("environment", () => {
   it("reads one OIDC provider with role mapping", async () => {
     const { oidcFromEnv } = await import("../src/env.ts");

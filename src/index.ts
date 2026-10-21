@@ -26,6 +26,7 @@ import {
 import { migrate } from "./db.ts";
 import { AuthError, clientIp, cookie, email as readEmail, parseCookies, readJson, sendJson, sendProblem, str } from "./http.ts";
 import { createOidc, validateProvider, type OidcClaims, type OidcProvider } from "./oidc.ts";
+import { PRESETS, preset as findPreset } from "./presets.ts";
 import { atLeast, highest, isRole, needsMfa, type Role } from "./roles.ts";
 
 export { AuthError, sendProblem, type AuthProblem } from "./http.ts";
@@ -48,7 +49,10 @@ export interface AuthOptions {
   trustedOrigins?: string[];
   /** Sign in with email and password. Default true; turn it off when everyone uses OIDC. */
   passwords?: boolean;
+  /** Providers from the environment. More can be added under Settings, Sign-in, and stored in the database. */
   oidc?: OidcProvider[];
+  /** For tests and local providers only: providers added under Settings may use an http:// issuer. */
+  allowInsecureIssuers?: boolean;
   /** 32 bytes that encrypt TOTP secrets at rest (ADR 0021). Without it they are stored in clear and a warning is due. */
   secretsKey?: Buffer;
   session?: {
@@ -79,7 +83,10 @@ export interface AuthEvent {
     | "member-updated"
     | "member-removed"
     | "token-created"
-    | "token-revoked";
+    | "token-revoked"
+    | "provider-added"
+    | "provider-updated"
+    | "provider-removed";
   /** Who did it, when known. */
   actor?: string;
   /** Whom it was done to, when that is someone else. */
@@ -116,6 +123,23 @@ interface UserRow {
   last_sign_in_at: string | null;
 }
 
+interface ProviderRow {
+  id: string;
+  preset: string;
+  name: string;
+  issuer: string;
+  client_id: string;
+  client_secret: string | null;
+  scopes: string;
+  groups_claim: string | null;
+  role_mapping: string;
+  default_role: Role | null;
+  allowed_domains: string;
+  enabled: number;
+  created_at: string;
+  updated_at: string;
+}
+
 const PREFIX = "/api/v1/auth";
 
 /**
@@ -138,9 +162,9 @@ export function createAuth(opts: AuthOptions) {
   const { db, product, productName } = opts;
   const origin = opts.origin.replace(/\/$/, "");
   const passwords = opts.passwords ?? true;
-  const providers = opts.oidc ?? [];
-  providers.forEach(validateProvider);
-  if (new Set(providers.map((p) => p.id)).size !== providers.length) throw new Error("OIDC provider ids must be unique");
+  const envProviders = opts.oidc ?? [];
+  envProviders.forEach(validateProvider);
+  if (new Set(envProviders.map((p) => p.id)).size !== envProviders.length) throw new Error("OIDC provider ids must be unique");
   const now = opts.now ?? Date.now;
   const iso = (ms = now()) => new Date(ms).toISOString();
   const idleMs = (opts.session?.idleMinutes ?? 60) * 60_000;
@@ -430,11 +454,126 @@ export function createAuth(opts: AuthOptions) {
     return userRow(user.id)!;
   }
 
+  // ---- Identity providers: from the environment, and added under Settings ----------------------------------------
+
+  const providerRow = (id: string) => db.prepare("SELECT * FROM auth_providers WHERE id = ?").get(id) as ProviderRow | undefined;
+  const providerRows = () => db.prepare("SELECT * FROM auth_providers ORDER BY name COLLATE NOCASE").all() as unknown as ProviderRow[];
+
+  const fromRow = (r: ProviderRow): OidcProvider => ({
+    id: r.id,
+    name: r.name,
+    issuer: r.issuer,
+    clientId: r.client_id,
+    clientSecret: r.client_secret ? secrets.open(r.client_secret) : undefined,
+    scopes: JSON.parse(r.scopes) as string[],
+    groupsClaim: r.groups_claim ?? undefined,
+    roleMapping: Object.keys(JSON.parse(r.role_mapping) as object).length ? (JSON.parse(r.role_mapping) as Record<string, Role>) : undefined,
+    defaultRole: r.default_role ?? undefined,
+    allowedDomains: (JSON.parse(r.allowed_domains) as string[]).length ? (JSON.parse(r.allowed_domains) as string[]) : undefined,
+    allowInsecure: opts.allowInsecureIssuers,
+  });
+
+  /** Every provider people can sign in with now: the environment's first, then the enabled ones from Settings. */
+  const providers = (): OidcProvider[] => [...envProviders, ...providerRows().filter((r) => r.enabled).map(fromRow)];
+
   const provider = (id: string) => {
-    const p = providers.find((x) => x.id === id);
+    const p = providers().find((x) => x.id === id);
     if (!p) throw new AuthError(404, "not-found", `No sign-in provider "${id}".`);
     return p;
   };
+
+  const redirectUri = (id: string) => `${origin}${PREFIX}/oidc/${id}/callback`;
+
+  /** A provider as Settings shows it: never the client secret. */
+  function providerView(p: OidcProvider, row?: ProviderRow) {
+    return {
+      id: p.id,
+      name: p.name,
+      preset: row?.preset ?? "generic",
+      source: row ? "settings" : "environment",
+      enabled: row ? row.enabled === 1 : true,
+      issuer: p.issuer,
+      clientId: p.clientId,
+      hasClientSecret: row ? !!row.client_secret : !!p.clientSecret,
+      scopes: p.scopes ?? ["openid", "email", "profile"],
+      groupsClaim: p.groupsClaim ?? null,
+      roleMapping: p.roleMapping ?? {},
+      defaultRole: p.defaultRole ?? null,
+      allowedDomains: p.allowedDomains ?? [],
+      redirectUri: redirectUri(p.id),
+      createdAt: row?.created_at ?? null,
+      updatedAt: row?.updated_at ?? null,
+    };
+  }
+
+  /** Reads and checks provider settings from a request; fields left out keep `current`. */
+  function providerInput(b: Record<string, unknown>, current?: ProviderRow) {
+    const bad = (m: string) => new AuthError(422, "invalid-body", m);
+    const presetId = current?.preset ?? (b.preset === undefined ? "generic" : b.preset);
+    const pr = typeof presetId === "string" ? findPreset(presetId) : undefined;
+    if (!pr) throw bad(`preset must be one of ${PRESETS.map((x) => x.id).join(", ")}.`);
+    const text = (name: string, max: number) => {
+      const v = b[name];
+      if (v === undefined) return undefined;
+      if (typeof v !== "string" || !v.trim() || v.length > max) throw bad(`${name} must be text, at most ${max} characters.`);
+      return v.trim();
+    };
+    const issuer = text("issuer", 512) ?? current?.issuer;
+    if (!issuer) throw bad("issuer is required: the address in the provider's discovery document.");
+    try {
+      validateProvider({ id: "check", name: "", issuer, clientId: "", allowInsecure: opts.allowInsecureIssuers });
+    } catch (err) {
+      throw bad((err as Error).message.replace('for "check" ', ""));
+    }
+    const clientId = text("clientId", 256) ?? current?.client_id;
+    if (!clientId) throw bad("clientId is required.");
+    let clientSecret = current?.client_secret ?? null;
+    if (b.clientSecret === null) clientSecret = null;
+    else if (b.clientSecret !== undefined) clientSecret = secrets.seal(text("clientSecret", 1024)!);
+    const list = (name: string, fallback: string[]) => {
+      const v = b[name];
+      if (v === undefined) return fallback;
+      if (!Array.isArray(v) || v.some((x) => typeof x !== "string" || !x.trim() || x.length > 256)) throw bad(`${name} must be a list of text.`);
+      return (v as string[]).map((x) => x.trim());
+    };
+    const scopes = list("scopes", current ? (JSON.parse(current.scopes) as string[]) : pr.scopes);
+    if (!scopes.includes("openid")) throw bad("scopes must include openid.");
+    const allowedDomains = list("allowedDomains", current ? (JSON.parse(current.allowed_domains) as string[]) : []).map((d) => d.toLowerCase());
+    let groupsClaim = current ? current.groups_claim : (pr.groupsClaim ?? null);
+    if (b.groupsClaim === null) groupsClaim = null;
+    else if (b.groupsClaim !== undefined) groupsClaim = text("groupsClaim", 256)!;
+    let roleMapping = current ? (JSON.parse(current.role_mapping) as Record<string, Role>) : {};
+    if (b.roleMapping !== undefined) {
+      const m = b.roleMapping;
+      if (!m || typeof m !== "object" || Array.isArray(m) || Object.entries(m).some(([g, r]) => !g.trim() || !isRole(r))) {
+        throw bad("roleMapping must map group names to owner, admin, editor or viewer.");
+      }
+      roleMapping = m as Record<string, Role>;
+    }
+    let defaultRole = current?.default_role ?? null;
+    if (b.defaultRole === null) defaultRole = null;
+    else if (b.defaultRole !== undefined) {
+      if (!isRole(b.defaultRole)) throw bad("defaultRole must be owner, admin, editor, viewer or null.");
+      defaultRole = b.defaultRole;
+    }
+    if (b.enabled !== undefined && typeof b.enabled !== "boolean") throw bad("enabled must be true or false.");
+    return {
+      preset: pr.id,
+      name: text("name", 64) ?? current?.name ?? pr.name,
+      issuer,
+      clientId,
+      clientSecret,
+      scopes,
+      groupsClaim,
+      roleMapping,
+      defaultRole,
+      allowedDomains,
+      enabled: b.enabled === undefined ? (current ? current.enabled === 1 : true) : b.enabled,
+    };
+  }
+
+  /** People linked to a provider stop being linked when it is removed or points elsewhere: the next provider's subjects are not theirs. */
+  const unlinkProvider = (id: string) => db.prepare("DELETE FROM auth_identities WHERE provider = ?").run(id);
 
   /** Only paths on this product, never another site. */
   const safeReturn = (v: string | null) => (v && v.startsWith("/") && !v.startsWith("//") && !v.startsWith("/\\") ? v : "/");
@@ -469,7 +608,7 @@ export function createAuth(opts: AuthOptions) {
     {
       method: "GET",
       path: "/methods",
-      handle: () => ({ passwords, passkeys: true, providers: providers.map((p) => ({ id: p.id, name: p.name })), setupRequired: userCount() === 0 }),
+      handle: () => ({ passwords, passkeys: true, providers: providers().map((p) => ({ id: p.id, name: p.name })), setupRequired: userCount() === 0 }),
     },
 
     // First start: the one-time link printed in the log creates the owner (ADR 0013).
@@ -957,6 +1096,92 @@ export function createAuth(opts: AuthOptions) {
         const token = createChallenge(kind, target.id, { kind }, 86_400_000);
         emit({ type: "member-updated", actor: p.user.id, target: target.id, ip: clientIp(req), detail: mfa ? "password link and second factors reset" : "password link" });
         sendJson(res, 200, { link: links.password(token), linkExpiresAt: iso(now() + 86_400_000) });
+      },
+    },
+
+    // Identity providers (Settings → Sign-in, ADR 0033). Admins see them; only owners change them, because a role
+    // mapping can make anyone in a group an owner.
+    {
+      method: "GET",
+      path: "/providers",
+      handle: ({ req }) => {
+        authorize(req, "admin");
+        const rows = providerRows();
+        return {
+          providers: [...envProviders.map((p) => providerView(p)), ...rows.map((r) => providerView(fromRow(r), r))],
+          redirectUriTemplate: `${origin}${PREFIX}/oidc/{id}/callback`,
+        };
+      },
+    },
+    {
+      method: "POST",
+      path: "/providers",
+      handle: async ({ req, res, body }) => {
+        const p = sessionPrincipal(req, "owner");
+        const b = await body();
+        const v = providerInput(b);
+        const id = b.id === undefined ? v.preset : b.id;
+        if (typeof id !== "string" || !/^[a-z0-9-]{1,32}$/.test(id)) throw new AuthError(422, "invalid-body", "id must be lowercase letters, digits and dashes, up to 32.");
+        if (envProviders.some((e) => e.id === id) || providerRow(id)) throw new AuthError(409, "conflict", `A provider with the id ${id} exists. Choose another id.`);
+        db.prepare(
+          "INSERT INTO auth_providers (id, preset, name, issuer, client_id, client_secret, scopes, groups_claim, role_mapping, default_role, allowed_domains, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ).run(id, v.preset, v.name, v.issuer, v.clientId, v.clientSecret, JSON.stringify(v.scopes), v.groupsClaim, JSON.stringify(v.roleMapping), v.defaultRole, JSON.stringify(v.allowedDomains), v.enabled ? 1 : 0, iso(), iso());
+        // Sign-ins kept from an earlier provider with this id are not this one's.
+        unlinkProvider(id);
+        emit({ type: "provider-added", actor: p.user.id, target: id, ip: clientIp(req), detail: `${v.name} (${v.issuer})` });
+        const row = providerRow(id)!;
+        sendJson(res, 201, providerView(fromRow(row), row));
+      },
+    },
+    {
+      method: "PATCH",
+      path: "/providers/:id",
+      handle: async ({ req, params, body }) => {
+        const p = sessionPrincipal(req, "owner");
+        const id = params[0]!;
+        if (envProviders.some((e) => e.id === id)) throw new AuthError(409, "conflict", `${id} is set in the environment; change it there.`);
+        const current = providerRow(id);
+        if (!current) throw new AuthError(404, "not-found", "No such provider.");
+        const v = providerInput(await body(), current);
+        db.prepare(
+          "UPDATE auth_providers SET name = ?, issuer = ?, client_id = ?, client_secret = ?, scopes = ?, groups_claim = ?, role_mapping = ?, default_role = ?, allowed_domains = ?, enabled = ?, updated_at = ? WHERE id = ?",
+        ).run(v.name, v.issuer, v.clientId, v.clientSecret, JSON.stringify(v.scopes), v.groupsClaim, JSON.stringify(v.roleMapping), v.defaultRole, JSON.stringify(v.allowedDomains), v.enabled ? 1 : 0, iso(), id);
+        if (v.issuer !== current.issuer) unlinkProvider(id);
+        oidc.forget(id);
+        emit({ type: "provider-updated", actor: p.user.id, target: id, ip: clientIp(req), detail: v.issuer !== current.issuer ? `issuer ${current.issuer} -> ${v.issuer}` : undefined });
+        const row = providerRow(id)!;
+        return providerView(fromRow(row), row);
+      },
+    },
+    {
+      method: "DELETE",
+      path: "/providers/:id",
+      handle: ({ req, res, params }) => {
+        const p = sessionPrincipal(req, "owner");
+        const id = params[0]!;
+        if (envProviders.some((e) => e.id === id)) throw new AuthError(409, "conflict", `${id} is set in the environment; remove it there.`);
+        if (db.prepare("DELETE FROM auth_providers WHERE id = ?").run(id).changes === 0) throw new AuthError(404, "not-found", "No such provider.");
+        unlinkProvider(id);
+        oidc.forget(id);
+        emit({ type: "provider-removed", actor: p.user.id, target: id, ip: clientIp(req) });
+        ok(res);
+      },
+    },
+    {
+      // Reads the discovery document before a provider is saved, so a wrong issuer shows at once.
+      method: "POST",
+      path: "/providers/discover",
+      handle: async ({ req, body }) => {
+        sessionPrincipal(req, "owner");
+        const issuer = str(await body(), "issuer", { max: 512 }).trim();
+        try {
+          validateProvider({ id: "check", name: "", issuer, clientId: "", allowInsecure: opts.allowInsecureIssuers });
+        } catch (err) {
+          throw new AuthError(422, "invalid-body", (err as Error).message.replace('for "check" ', ""));
+        }
+        return await oidc.discover(issuer, !!opts.allowInsecureIssuers).catch((err: Error) => {
+          throw new AuthError(422, "invalid-body", `No OpenID provider answers at ${issuer}: ${err.message}`);
+        });
       },
     },
 

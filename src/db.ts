@@ -87,6 +87,24 @@ const MIGRATIONS = [
    )`,
   `-- The browser and operating system a session was opened on, without version numbers (see deviceOf).
    ALTER TABLE auth_sessions ADD COLUMN device TEXT NOT NULL DEFAULT ''`,
+  `-- Identity providers added under Settings, Sign-in (ADR 0033), next to the ones from the environment. The client
+   -- secret is sealed with the secrets key; lists are JSON.
+   CREATE TABLE auth_providers (
+     id TEXT PRIMARY KEY,
+     preset TEXT NOT NULL,
+     name TEXT NOT NULL,
+     issuer TEXT NOT NULL,
+     client_id TEXT NOT NULL,
+     client_secret TEXT,
+     scopes TEXT NOT NULL,
+     groups_claim TEXT,
+     role_mapping TEXT NOT NULL DEFAULT '{}',
+     default_role TEXT CHECK (default_role IN ('owner', 'admin', 'editor', 'viewer')),
+     allowed_domains TEXT NOT NULL DEFAULT '[]',
+     enabled INTEGER NOT NULL DEFAULT 1,
+     created_at TEXT NOT NULL,
+     updated_at TEXT NOT NULL
+   )`,
 ];
 
 export function migrate(db: DatabaseSync) {

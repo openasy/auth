@@ -133,6 +133,26 @@ describe("/api/v1/auth matches its OpenAPI description", () => {
     await fresh.close();
   });
 
+  it("identity providers", async () => {
+    const fresh = await startProduct({ allowInsecureIssuers: true });
+    const o = await createOwner(fresh);
+    await addTotp(fresh, o);
+    const body = { preset: "keycloak", issuer: idp.issuer, clientId: "c", clientSecret: "s", roleMapping: { ops: "admin" } };
+    await check(o, "POST", "/api/v1/auth/providers/discover", undefined, { issuer: idp.issuer });
+    await check(o, "POST", "/api/v1/auth/providers/discover", undefined, { issuer: "ftp://x" });
+    await check(o, "POST", "/api/v1/auth/providers", undefined, body);
+    await check(o, "POST", "/api/v1/auth/providers", undefined, body);
+    await check(o, "POST", "/api/v1/auth/providers", undefined, { ...body, preset: "nope" });
+    await check(o, "GET", "/api/v1/auth/providers");
+    await check(fresh.browser(), "GET", "/api/v1/auth/providers");
+    await check(o, "PATCH", "/api/v1/auth/providers/{id}", "/api/v1/auth/providers/keycloak", { groupsClaim: "realm_access.roles", defaultRole: null });
+    await check(o, "PATCH", "/api/v1/auth/providers/{id}", "/api/v1/auth/providers/keycloak", { scopes: ["email"] });
+    await check(o, "PATCH", "/api/v1/auth/providers/{id}", "/api/v1/auth/providers/nope", {});
+    await check(o, "DELETE", "/api/v1/auth/providers/{id}", "/api/v1/auth/providers/keycloak");
+    await check(o, "DELETE", "/api/v1/auth/providers/{id}", "/api/v1/auth/providers/keycloak");
+    await fresh.close();
+  });
+
   it("OIDC redirects", async () => {
     const b = app.browser();
     await check(b, "GET", "/api/v1/auth/oidc/{id}/start", "/api/v1/auth/oidc/nope/start");

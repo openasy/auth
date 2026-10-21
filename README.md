@@ -69,6 +69,10 @@ environment, `<P>OIDC_PROVIDER=keycloak` makes them the defaults; the other vari
 - **Groups** are read from the ID token, or from userinfo when the token has none. `groupsClaim` is a claim name or a
   dotted path into nested claims: `realm_access.roles` for Keycloak realm roles. A list, one name, or an object whose
   keys are the names (ZITADEL's `urn:zitadel:iam:org:project:roles`) all work.
+- **Settings, Sign-in:** owners add providers under `/providers` as well as in the environment. The client secret is
+  sealed with the secrets key and never returned. Removing a provider, or pointing it at another issuer, unlinks the
+  people who signed in through it, so another provider's account with the same subject is never taken for theirs.
+  `allowInsecureIssuers` allows http:// issuers there, for tests and local providers only.
 - **Too many groups:** Microsoft Entra ID leaves the groups out of a token when there are too many. With a role
   mapping, the person is refused with what to change, rather than given the wrong role.
 
@@ -115,6 +119,8 @@ All under `/api/v1/auth`. Errors are RFC 9457 problems with a stable `code`.
 | `POST /me/passkeys/options`, `POST /me/passkeys`, `DELETE /me/passkeys/:id` | signed in |
 | `GET`, `POST /members`, `PATCH`, `DELETE /members/:id`, `POST /members/:id/reset` | admin (owners for owners) |
 | `GET`, `POST /tokens`, `DELETE /tokens/:id` | admin |
+| `GET /providers` | admin: identity providers from the environment and from Settings, never their secrets |
+| `POST /providers`, `PATCH`, `DELETE /providers/:id`, `POST /providers/discover` | owner: a role mapping can make anyone in a group an owner |
 
 ## Not built yet
 
