@@ -167,6 +167,8 @@ export async function startIdp() {
   const idp = {
     issuer: "",
     next: {} as Record<string, unknown>,
+    /** Claims the userinfo endpoint answers with; unset, the provider has no userinfo endpoint. */
+    userinfo: undefined as undefined | Record<string, unknown>,
     /** Set to make the ID token wrong in one way. */
     tamper: undefined as undefined | "audience" | "nonce",
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
@@ -184,9 +186,14 @@ export async function startIdp() {
         subject_types_supported: ["public"],
         id_token_signing_alg_values_supported: ["RS256"],
         code_challenge_methods_supported: ["S256"],
+        ...(idp.userinfo && { userinfo_endpoint: `${idp.issuer}/userinfo` }),
       });
     }
     if (url.pathname === "/jwks") return json({ keys: [jwk] });
+    if (url.pathname === "/userinfo" && idp.userinfo) {
+      if (req.headers.authorization !== "Bearer at") return res.writeHead(401).end();
+      return json(idp.userinfo);
+    }
     if (url.pathname === "/authorize") {
       const code = randomBytes(8).toString("hex");
       const q = url.searchParams;

@@ -31,6 +31,7 @@ import { atLeast, highest, isRole, needsMfa, type Role } from "./roles.ts";
 export { AuthError, sendProblem, type AuthProblem } from "./http.ts";
 export { ROLES, atLeast, type Role } from "./roles.ts";
 export type { OidcProvider } from "./oidc.ts";
+export { PRESETS, preset, type ProviderPreset } from "./presets.ts";
 export { oidcFromEnv, readSecretsKey } from "./env.ts";
 export { authOpenApi, mergeOpenApi } from "./openapi.ts";
 
@@ -399,6 +400,8 @@ export function createAuth(opts: AuthOptions) {
     if (p.allowedDomains && !(c.email && c.emailVerified && p.allowedDomains.includes(c.email.split("@")[1]!))) {
       throw refuse(`Your ${p.name} account is not in an allowed domain.`);
     }
+    // Without the groups, the mapping would give the wrong role: refuse and say how to fix it at the provider.
+    if (p.roleMapping && c.groupsOverage) throw refuse(`${p.name} left your groups out of the token because there are too many. An admin can send only the groups assigned to ${productName}'s registration.`);
     const mapped = p.roleMapping ? highest(c.groups.map((g) => p.roleMapping![g]).filter(isRole)) : undefined;
     const identity = db.prepare("SELECT user_id FROM auth_identities WHERE provider = ? AND subject = ?").get(p.id, c.subject) as { user_id: string } | undefined;
     let user = identity ? userRow(identity.user_id) : undefined;

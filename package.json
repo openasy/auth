@@ -20,6 +20,10 @@
       "types": "./dist/client.d.ts",
       "import": "./dist/client.js"
     },
+    "./presets": {
+      "types": "./dist/presets.d.ts",
+      "import": "./dist/presets.js"
+    },
     "./react": {
       "types": "./dist/react.d.ts",
       "import": "./dist/react.js"

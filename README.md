@@ -60,6 +60,18 @@ setInterval(() => auth.purge(), 5 * 60_000);
 
 The OIDC redirect URI to register at the provider is `<origin>/api/v1/auth/oidc/<id>/callback`.
 
+### Identity providers
+
+`PRESETS` (also at `@openasy/auth/presets`, without Node imports, for screens) holds the name, scopes, groups claim
+and setup steps for Keycloak, Microsoft Entra ID, Okta, Google, authentik, ZITADEL and OpenAsy Identity. In the
+environment, `<P>OIDC_PROVIDER=keycloak` makes them the defaults; the other variables still win.
+
+- **Groups** are read from the ID token, or from userinfo when the token has none. `groupsClaim` is a claim name or a
+  dotted path into nested claims: `realm_access.roles` for Keycloak realm roles. A list, one name, or an object whose
+  keys are the names (ZITADEL's `urn:zitadel:iam:org:project:roles`) all work.
+- **Too many groups:** Microsoft Entra ID leaves the groups out of a token when there are too many. With a role
+  mapping, the person is refused with what to change, rather than given the wrong role.
+
 The OpenAPI description of the routes is `authOpenApi()`; serve `mergeOpenApi(yourSpec)` so your API reference includes
 sign-in. `test/contract.test.ts` checks every response against it. Each product can read one OIDC provider from its
 environment with `oidcFromEnv(process.env, "VULNS_")` and the secrets key with `readSecretsKey(path)`.

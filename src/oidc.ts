@@ -12,7 +12,10 @@ export interface OidcProvider {
   clientSecret?: string;
   /** Default: openid email profile. Add groups (or what the IdP calls it) for role mapping. */
   scopes?: string[];
-  /** The claim holding group names. Default: groups. */
+  /**
+   * Where group names are: a claim name, or a dotted path into nested claims such as realm_access.roles. A list,
+   * one name, or an object whose keys are the names (ZITADEL's roles). Default: groups.
+   */
   groupsClaim?: string;
   /**
    * IdP group to role (ADR 0003). When set, the role follows the groups on every sign-in, and people in none of
@@ -33,6 +36,27 @@ export interface OidcClaims {
   emailVerified: boolean;
   name: string | undefined;
   groups: string[];
+  /** The provider had too many groups for the token and left them out (Microsoft Entra ID). */
+  groupsOverage: boolean;
+}
+
+/** The value at a claim name, or else at a dotted path into nested claims. */
+export function claimAt(claims: Record<string, unknown>, path: string): unknown {
+  if (path in claims) return claims[path];
+  let v: unknown = claims;
+  for (const part of path.split(".")) {
+    if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
+    v = (v as Record<string, unknown>)[part];
+  }
+  return v;
+}
+
+/** Group names from a claim value: a list, one name, or an object whose keys are the names. */
+export function groupNames(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw.filter((g): g is string => typeof g === "string");
+  if (typeof raw === "string") return [raw];
+  if (raw && typeof raw === "object") return Object.keys(raw);
+  return [];
 }
 
 export function validateProvider(p: OidcProvider) {
@@ -86,13 +110,21 @@ export function createOidc(redirectUri: (id: string) => string) {
       });
       const claims = tokens.claims();
       if (!claims) throw new Error("the provider returned no ID token");
-      const raw = claims[p.groupsClaim ?? "groups"];
+      const path = p.groupsClaim ?? "groups";
+      let raw = claimAt(claims, path);
+      // Some providers put groups only in userinfo (authentik, Okta with some authorization servers).
+      if (raw === undefined && cfg.serverMetadata().userinfo_endpoint && tokens.access_token) {
+        const info = await client.fetchUserInfo(cfg, tokens.access_token, claims.sub).catch(() => undefined);
+        if (info) raw = claimAt(info, path);
+      }
+      const names = claims._claim_names as Record<string, unknown> | undefined;
       return {
         subject: claims.sub,
         email: typeof claims.email === "string" ? claims.email.toLowerCase() : undefined,
         emailVerified: claims.email_verified === true,
         name: typeof claims.name === "string" ? claims.name : undefined,
-        groups: Array.isArray(raw) ? raw.filter((g): g is string => typeof g === "string") : typeof raw === "string" ? [raw] : [],
+        groups: groupNames(raw),
+        groupsOverage: raw === undefined && !!names && path in names,
       };
     },
   };

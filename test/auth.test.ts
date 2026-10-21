@@ -459,6 +459,35 @@ describe("OIDC", () => {
     expect(decodeURIComponent((await oidcSignIn(app.browser(), "corp")).location)).toMatch(/could not be verified/);
   });
 
+  it("reads groups from nested claims and from role objects", async () => {
+    await withProvider({ groupsClaim: "realm_access.roles", roleMapping: { "ops-admin": "admin" } });
+    idp.next = { sub: "k1", email: "kim@example.com", email_verified: true, realm_access: { roles: ["offline_access", "ops-admin"] } };
+    const b = app.browser();
+    await oidcSignIn(b, "corp");
+    expect((await needs(b, "admin")).status).toBe(200);
+
+    await withProvider({ groupsClaim: "urn:zitadel:iam:org:project:roles", roleMapping: { editor: "editor" } });
+    idp.next = { sub: "z1", email: "zoe@example.com", email_verified: true, "urn:zitadel:iam:org:project:roles": { editor: { "123": "acme.zitadel.cloud" } } };
+    const z = app.browser();
+    await oidcSignIn(z, "corp");
+    expect((await needs(z, "editor")).status).toBe(200);
+  });
+
+  it("reads groups from userinfo when the ID token has none", async () => {
+    idp.userinfo = { sub: "u7", groups: ["vulns-admins"] };
+    await withProvider({ roleMapping: { "vulns-admins": "admin" } });
+    idp.next = { sub: "u7", email: "una@example.com", email_verified: true };
+    const b = app.browser();
+    await oidcSignIn(b, "corp");
+    expect((await needs(b, "admin")).status).toBe(200);
+  });
+
+  it("refuses when the provider left the groups out of the token", async () => {
+    await withProvider({ roleMapping: { "vulns-admins": "admin" } });
+    idp.next = { sub: "u8", email: "max@example.com", email_verified: true, _claim_names: { groups: "src1" }, _claim_sources: { src1: { endpoint: "https://graph.example" } } };
+    expect(decodeURIComponent((await oidcSignIn(app.browser(), "corp")).location)).toMatch(/left your groups out of the token/);
+  });
+
   it("never redirects to another site after sign-in", async () => {
     await withProvider({ defaultRole: "viewer" });
     idp.next = { sub: "u6", email: "cy@example.com", email_verified: true };
@@ -477,6 +506,24 @@ describe("environment", () => {
     expect(p).toMatchObject({ id: "sso", name: "SSO", roleMapping: { sec: "admin", staff: "viewer" }, allowedDomains: ["example.com"] });
     expect(() => oidcFromEnv({ VULNS_OIDC_ISSUER: "https://x" }, "VULNS_")).toThrow(/CLIENT_ID/);
     expect(() => oidcFromEnv({ VULNS_OIDC_ISSUER: "https://x", VULNS_OIDC_CLIENT_ID: "c", VULNS_OIDC_DEFAULT_ROLE: "god" }, "VULNS_")).toThrow(/not owner/);
+  });
+
+  it("takes a provider's defaults from OIDC_PROVIDER, and the variables still win", async () => {
+    const { oidcFromEnv } = await import("../src/env.ts");
+    const base = { VPN_OIDC_ISSUER: "https://okta.example.com", VPN_OIDC_CLIENT_ID: "vpn" };
+    expect(oidcFromEnv({ ...base, VPN_OIDC_PROVIDER: "okta" }, "VPN_")[0]).toMatchObject({ name: "Okta", scopes: ["openid", "email", "profile", "groups"], groupsClaim: "groups" });
+    expect(oidcFromEnv({ ...base, VPN_OIDC_PROVIDER: "keycloak", VPN_OIDC_NAME: "Ops", VPN_OIDC_GROUPS_CLAIM: "realm_access.roles" }, "VPN_")[0]).toMatchObject({ name: "Ops", groupsClaim: "realm_access.roles" });
+    expect(() => oidcFromEnv({ ...base, VPN_OIDC_PROVIDER: "myspace" }, "VPN_")).toThrow(/is not one of keycloak, entra/);
+  });
+
+  it("has setup steps with the redirect address for every preset", async () => {
+    const { PRESETS } = await import("../src/presets.ts");
+    expect(new Set(PRESETS.map((p) => p.id)).size).toBe(PRESETS.length);
+    for (const p of PRESETS) {
+      expect(p.steps.join(" "), p.id).toContain("{redirectUri}");
+      expect(p.scopes, p.id).toContain("openid");
+      expect(p.docs, p.id).toMatch(/^https:\/\//);
+    }
   });
 
   it("reads the secrets key as hex, base64 or raw bytes", async () => {

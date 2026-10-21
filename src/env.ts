@@ -1,14 +1,17 @@
 import { existsSync, readFileSync } from "node:fs";
 import type { OidcProvider } from "./oidc.ts";
+import { PRESETS, preset } from "./presets.ts";
 import { isRole, type Role } from "./roles.ts";
 
 /**
  * One OIDC provider from environment variables, the same names in every product with its own prefix:
  *
  *   <P>OIDC_ISSUER, <P>OIDC_CLIENT_ID, <P>OIDC_CLIENT_SECRET   required to turn it on
+ *   <P>OIDC_PROVIDER        keycloak, entra, okta, google, authentik, zitadel or openasy-identity: its name, scopes
+ *                           and groups claim become the defaults of the three below
  *   <P>OIDC_NAME            on the button, default "SSO"
  *   <P>OIDC_SCOPES          space-separated, default "openid email profile"
- *   <P>OIDC_GROUPS_CLAIM    default "groups"
+ *   <P>OIDC_GROUPS_CLAIM    default "groups"; a dotted path such as realm_access.roles reads nested claims
  *   <P>OIDC_ROLE_MAPPING    "group=role,group=role", for example "vulns-admins=admin,staff=viewer"
  *   <P>OIDC_DEFAULT_ROLE    role for people nobody invited; unset means they are refused
  *   <P>OIDC_ALLOWED_DOMAINS comma-separated email domains
@@ -23,17 +26,20 @@ export function oidcFromEnv(env: Record<string, string | undefined>, prefix: str
     if (!isRole(value)) throw new Error(`${what}: "${value}" is not owner, admin, editor or viewer`);
     return value;
   };
+  const presetId = v("PROVIDER");
+  const p = presetId ? preset(presetId) : undefined;
+  if (presetId && !p) throw new Error(`${prefix}OIDC_PROVIDER: "${presetId}" is not one of ${PRESETS.map((x) => x.id).join(", ")}`);
   const mapping = v("ROLE_MAPPING");
   const defaultRole = v("DEFAULT_ROLE");
   return [
     {
       id: "sso",
-      name: v("NAME") ?? "SSO",
+      name: v("NAME") ?? p?.name ?? "SSO",
       issuer,
       clientId,
       clientSecret: v("CLIENT_SECRET"),
-      scopes: v("SCOPES")?.split(/\s+/),
-      groupsClaim: v("GROUPS_CLAIM"),
+      scopes: v("SCOPES")?.split(/\s+/) ?? p?.scopes,
+      groupsClaim: v("GROUPS_CLAIM") ?? p?.groupsClaim,
       roleMapping: mapping
         ? Object.fromEntries(
             mapping.split(",").map((pair) => {
