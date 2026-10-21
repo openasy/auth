@@ -73,6 +73,8 @@ environment, `<P>OIDC_PROVIDER=keycloak` makes them the defaults; the other vari
   sealed with the secrets key and never returned. Removing a provider, or pointing it at another issuer, unlinks the
   people who signed in through it, so another provider's account with the same subject is never taken for theirs.
   `allowInsecureIssuers` allows http:// issuers there, for tests and local providers only.
+- **A ready Keycloak:** [`examples/keycloak`](./examples/keycloak) starts Keycloak with a realm in which every OpenAsy
+  product is a client, with groups and a groups claim. CI signs in through it on every change.
 - **Groups for the product:** `onOidcSignIn({ userId, provider, groups })` runs after each sign-in through a
   provider, so a product can keep the groups; Identity does.
 - **Too many groups:** Microsoft Entra ID leaves the groups out of a token when there are too many. With a role

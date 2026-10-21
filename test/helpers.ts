@@ -10,7 +10,8 @@ import { fromBase32, TOTP_STEP, totp } from "../src/crypto.ts";
 export const PASSWORD = "correct horse battery staple";
 
 /** The product: auth routes plus one route per role, like a product's own API. */
-export async function startProduct(opts: Partial<AuthOptions> = {}) {
+/** `port` 0 picks a free one; a fixed one is for providers that only send people back to a registered address. */
+export async function startProduct(opts: Partial<AuthOptions> = {}, port = 0) {
   const db = new DatabaseSync(":memory:");
   const clock = { t: Date.parse("2026-10-20T10:00:00Z") };
   const events: AuthEvent[] = [];
@@ -27,7 +28,7 @@ export async function startProduct(opts: Partial<AuthOptions> = {}) {
       res.writeHead(e.status, { "content-type": "application/json" }).end(JSON.stringify({ code: e.code }));
     }
   });
-  await new Promise<void>((resolve) => server.listen(0, resolve));
+  await new Promise<void>((resolve) => server.listen(port, resolve));
   origin = `http://localhost:${(server.address() as AddressInfo).port}`;
   const auth = createAuth({ db, product: "test", productName: "OpenAsy Test", origin, now: () => clock.t, onEvent: (e) => events.push(e), ...opts });
   const close = () => new Promise<void>((resolve) => server.close(() => resolve()));

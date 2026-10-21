@@ -1,0 +1,55 @@
+# Keycloak, ready for OpenAsy: the realm openasy with a client for each product, the groups openasy-admins,
+# openasy-editors and openasy-viewers, and a groups claim every product reads (ADR 0033).
+#
+#   cp .env.example .env                          # then fill in the addresses and secrets
+#   docker compose up -d
+#
+# Then in each product, Settings, Sign-in, add Keycloak: the issuer is $KEYCLOAK_URL/realms/openasy, the client is
+# openasy-vpn (or -infrastructure, -vulnerabilities, -identity) with its secret from .env. Add people in Keycloak
+# and put them in a group; map the groups to roles in the product, for example openasy-admins = admin.
+#
+# The realm is imported once: later changes are made in Keycloak's own console, at $KEYCLOAK_URL/admin.
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.1
+    restart: unless-stopped
+    command: start --import-realm
+    ports:
+      - "127.0.0.1:8180:8080"   # behind your TLS proxy, at KEYCLOAK_URL
+    volumes:
+      - ./openasy-realm.json:/opt/keycloak/data/import/openasy-realm.json:ro
+    environment:
+      KC_HOSTNAME: ${KEYCLOAK_URL:?set KEYCLOAK_URL, the https:// address people open Keycloak at}
+      KC_HTTP_ENABLED: "true"   # TLS ends at the proxy (ADR 0026)
+      KC_PROXY_HEADERS: xforwarded
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?set KEYCLOAK_DB_PASSWORD}
+      # The first admin of Keycloak itself; change the password in its console once you are in.
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?set KEYCLOAK_ADMIN_PASSWORD}
+      # Where each product is opened, and the secret its client has. A product you do not run keeps a placeholder.
+      OPENASY_VPN_URL: ${OPENASY_VPN_URL:-https://vpn.example.com}
+      OPENASY_VPN_SECRET: ${OPENASY_VPN_SECRET:?set OPENASY_VPN_SECRET}
+      OPENASY_INFRA_URL: ${OPENASY_INFRA_URL:-https://infra.example.com}
+      OPENASY_INFRA_SECRET: ${OPENASY_INFRA_SECRET:?set OPENASY_INFRA_SECRET}
+      OPENASY_VULNS_URL: ${OPENASY_VULNS_URL:-https://vulns.example.com}
+      OPENASY_VULNS_SECRET: ${OPENASY_VULNS_SECRET:?set OPENASY_VULNS_SECRET}
+      OPENASY_IDENTITY_URL: ${OPENASY_IDENTITY_URL:-https://id.example.com}
+      OPENASY_IDENTITY_SECRET: ${OPENASY_IDENTITY_SECRET:?set OPENASY_IDENTITY_SECRET}
+    depends_on:
+      - postgres
+
+  postgres:
+    image: postgres:17.6
+    restart: unless-stopped
+    volumes:
+      - keycloak-db:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?set KEYCLOAK_DB_PASSWORD}
+
+volumes:
+  keycloak-db:
