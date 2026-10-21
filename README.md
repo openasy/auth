@@ -24,7 +24,7 @@ SAML 2.0, LDAP, trusted proxy headers and GitHub sign-in are planned (see ADR 00
 Each release attaches the built package to its [GitHub release](https://github.com/openasy/auth/releases); no registry or token is needed.
 
 ```bash
-npm install https://github.com/openasy/auth/releases/download/v0.3.0/openasy-auth-0.3.0.tgz
+npm install https://github.com/openasy/auth/releases/download/v0.4.0/openasy-auth-0.4.0.tgz
 ```
 
 Node 26 or later.
