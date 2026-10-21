@@ -488,6 +488,29 @@ describe("OIDC", () => {
     expect(decodeURIComponent((await oidcSignIn(app.browser(), "corp")).location)).toMatch(/left your groups out of the token/);
   });
 
+  it("makes the first person the owner through a provider, with the setup link", async () => {
+    await app.close();
+    app = await startProduct({ passwords: false, oidc: [{ id: "corp", name: "Corp SSO", issuer: idp.issuer, clientId: "vulns", clientSecret: "s3cret", allowInsecure: true }] });
+    const token = new URL(app.auth.setupLink()!).searchParams.get("setup")!;
+    // A password owner could never sign in with passwords off.
+    const pw = await app.browser().json<{ detail: string }>("/api/v1/auth/setup", { body: { token, name: "O", email: "o@example.com", password: PASSWORD } });
+    expect(pw.status).toBe(409);
+    expect(pw.body.detail).toMatch(/continue with Corp SSO/);
+    expect((await app.browser().fetch("/api/v1/auth/oidc/corp/start?setup=wrong")).status).toBe(403);
+
+    idp.next = { sub: "first", email: "olivia@example.com", email_verified: true, name: "Olivia" };
+    const b = app.browser();
+    const start = await b.fetch(`/api/v1/auth/oidc/corp/start?setup=${token}`);
+    const atIdp = await fetch(start.headers.get("location")!, { redirect: "manual" });
+    const back = new URL(atIdp.headers.get("location")!);
+    expect((await b.fetch(back.pathname + back.search)).headers.get("location")).toBe("/");
+    expect((await b.json<{ user: { role: string; email: string; providers: string[] } }>("/api/v1/auth/me")).body.user).toMatchObject({ role: "owner", email: "olivia@example.com", providers: ["corp"] });
+    expect(app.events.find((e) => e.type === "setup")).toMatchObject({ method: "oidc:corp" });
+    // The link is used: nobody else becomes owner with it.
+    expect(app.auth.setupLink()).toBeUndefined();
+    expect((await app.browser().fetch(`/api/v1/auth/oidc/corp/start?setup=${token}`)).status).toBe(403);
+  });
+
   it("never redirects to another site after sign-in", async () => {
     await withProvider({ defaultRole: "viewer" });
     idp.next = { sub: "u6", email: "cy@example.com", email_verified: true };

@@ -168,10 +168,11 @@ const paths = {
     post: op({
       operationId: "authSetup",
       summary: "Create the owner",
-      description: "Only once, with the token from the setup link printed in the log on first start (ADR 0013).",
+      description:
+        "Only once, with the token from the setup link printed in the log on first start (ADR 0013). With password sign-in off and a provider set up, the owner signs in through the provider instead: see /oidc/{id}/start.",
       security: anyone,
       body: obj({ token: str, name: str, email: str, password }),
-      responses: { "200": json(ref("AuthSignedIn")), ...problems(...unsafe) },
+      responses: { "200": json(ref("AuthSignedIn")), ...problems(...unsafe, 409) },
     }),
   },
   "/api/v1/auth/login": {
@@ -215,10 +216,11 @@ const paths = {
     get: op({
       operationId: "authOidcStart",
       summary: "Sign in through an identity provider",
-      description: "Redirects the browser to the provider. `return` is a path on this product to come back to.",
+      description:
+        "Redirects the browser to the provider. `return` is a path on this product to come back to. `setup` is the token of the one-time setup link: the first person becomes the owner through the provider.",
       security: anyone,
       params: ["id"],
-      responses: { "302": empty("To the identity provider"), ...problems(404, 503) },
+      responses: { "302": empty("To the identity provider"), ...problems(403, 404, 503) },
     }),
   },
   "/api/v1/auth/oidc/{id}/callback": {

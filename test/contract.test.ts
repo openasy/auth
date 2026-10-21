@@ -156,6 +156,11 @@ describe("/api/v1/auth matches its OpenAPI description", () => {
   it("OIDC redirects", async () => {
     const b = app.browser();
     await check(b, "GET", "/api/v1/auth/oidc/{id}/start", "/api/v1/auth/oidc/nope/start");
+    await check(b, "GET", "/api/v1/auth/oidc/{id}/start", "/api/v1/auth/oidc/corp/start?setup=wrong");
+    const ssoOnly = await startProduct({ passwords: false, oidc: [{ id: "corp", name: "Corp", issuer: idp.issuer, clientId: "c", allowInsecure: true }] });
+    const setup = new URL(ssoOnly.auth.setupLink()!).searchParams.get("setup");
+    await check(ssoOnly.browser(), "POST", "/api/v1/auth/setup", undefined, { token: setup, name: "O", email: "o@example.com", password: PASSWORD });
+    await ssoOnly.close();
     const start = await check(b, "GET", "/api/v1/auth/oidc/{id}/start", "/api/v1/auth/oidc/corp/start");
     idp.next = { sub: "x", email: "x@example.com", email_verified: true };
     const atIdp = await fetch(start.headers.get("location")!, { redirect: "manual" });

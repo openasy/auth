@@ -476,6 +476,19 @@ export function createAuth(opts: AuthOptions) {
   /** Every provider people can sign in with now: the environment's first, then the enabled ones from Settings. */
   const providers = (): OidcProvider[] => [...envProviders, ...providerRows().filter((r) => r.enabled).map(fromRow)];
 
+  /** The first person, through a provider and the one-time setup link: they become the owner (ADR 0013). */
+  function oidcOwner(p: OidcProvider, c: OidcClaims, setupHash: string, ip: string): UserRow {
+    const setup = db.prepare("SELECT expires_at FROM auth_challenges WHERE id_hash = ? AND kind = 'setup'").get(setupHash) as { expires_at: string } | undefined;
+    if (!setup || setup.expires_at <= iso() || userCount() > 0) throw new AuthError(403, "invalid-token", "This setup link is used or expired. Restart the product for a new one.");
+    if (!c.email) throw new AuthError(403, "forbidden", `${p.name} did not say your email address. Allow the email scope for ${productName}.`);
+    if (p.allowedDomains && !(c.emailVerified && p.allowedDomains.includes(c.email.split("@")[1]!))) throw new AuthError(403, "forbidden", `Your ${p.name} account is not in an allowed domain.`);
+    const user = insertUser({ email: c.email, name: c.name ?? c.email, role: "owner", status: "active" });
+    dropChallenge(setupHash);
+    db.prepare("INSERT INTO auth_identities (provider, subject, user_id, email, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?)").run(p.id, c.subject, user.id, c.email, iso(), iso());
+    emit({ type: "setup", actor: user.id, method: `oidc:${p.id}`, ip });
+    return user;
+  }
+
   const provider = (id: string) => {
     const p = providers().find((x) => x.id === id);
     if (!p) throw new AuthError(404, "not-found", `No sign-in provider "${id}".`);
@@ -620,6 +633,8 @@ export function createAuth(opts: AuthOptions) {
         const b = await body();
         const ch = readChallenge(str(b, "token", { max: 128 }), "setup");
         if (!ch || userCount() > 0) throw new AuthError(403, "invalid-token", "This setup link is used or expired. Restart the product for a new one.");
+        // With password sign-in off, the owner signs in through a provider: a password nobody can use is no owner.
+        if (!passwords && providers().length) throw new AuthError(409, "conflict", `Password sign-in is off: continue with ${providers()[0]!.name} to become the owner.`);
         const user = insertUser({ email: readEmail(b), name: str(b, "name", { max: 128 }).trim(), role: "owner", status: "active", passwordHash: await hashPassword(newPassword(b)) });
         dropChallenge(ch.idHash);
         emit({ type: "setup", actor: user.id, ip: clientIp(req) });
@@ -738,8 +753,17 @@ export function createAuth(opts: AuthOptions) {
       path: "/oidc/:id/start",
       handle: async ({ res, url, params }) => {
         const p = provider(params[0]!);
+        // ?setup=<token>: the first person becomes the owner through this provider, with the one-time setup link.
+        const setupToken = url.searchParams.get("setup") ?? undefined;
+        const setup = setupToken ? readChallenge(setupToken, "setup") : undefined;
+        if (setupToken && (!setup || userCount() > 0)) throw new AuthError(403, "invalid-token", "This setup link is used or expired. Restart the product for a new one.");
         const s = await oidc.start(p);
-        const id = createChallenge("oidc", null, { provider: p.id, verifier: s.verifier, state: s.state, nonce: s.nonce, return: safeReturn(url.searchParams.get("return")) }, 10 * 60_000);
+        const id = createChallenge(
+          "oidc",
+          null,
+          { provider: p.id, verifier: s.verifier, state: s.state, nonce: s.nonce, return: safeReturn(url.searchParams.get("return")), setup: setup?.idHash ?? null },
+          10 * 60_000,
+        );
         res.writeHead(302, { location: s.url, "set-cookie": setCookie(C.oidc, id, 600), "cache-control": "no-store" }).end();
       },
     },
@@ -760,7 +784,7 @@ export function createAuth(opts: AuthOptions) {
             .catch((err: Error) => {
               throw new AuthError(401, "invalid-credentials", `${p.name} sign-in could not be verified: ${err.message}`);
             });
-          const user = oidcUser(p, claims, clientIp(req));
+          const user = ch.data.setup ? oidcOwner(p, claims, String(ch.data.setup), clientIp(req)) : oidcUser(p, claims, clientIp(req));
           redirect(String(ch.data.return), [startSession(req, user, `oidc:${p.id}`, false), clearCookie(C.oidc)]);
         } catch (err) {
           if (!(err instanceof AuthError)) throw err;
