@@ -674,10 +674,11 @@ function useList<T>(load: () => Promise<T[]>) {
   return { rows, error, setError, reload };
 }
 
-function Table({ label, head, children }: { label: string; head: string[]; children: ReactNode }) {
+/** `minWidth` keeps wide rows readable on a phone: the table scrolls sideways instead of squeezing every column. */
+function Table({ label, head, children, minWidth }: { label: string; head: string[]; children: ReactNode; minWidth?: string }) {
   return (
     <div style={{ overflowX: "auto" }}>
-      <table aria-label={label} className="w-full text-left text-sm" style={{ borderCollapse: "collapse" }}>
+      <table aria-label={label} className="w-full text-left text-sm" style={{ borderCollapse: "collapse", minWidth }}>
         <thead>
           <tr className="border-b border-line text-xs text-fg-muted">
             {head.map((h) => (
@@ -1223,7 +1224,7 @@ function ProviderForm({ editing, template, onSaved, onCancel }: { editing?: Prov
             value={issuer}
             onChange={(e) => (setIssuer(e.target.value), setCheck(undefined))}
             error={check && !check.ok ? check.text : undefined}
-            hint={check?.ok ? check.text : "The address in the provider's discovery document."}
+            hint={check?.ok ? check.text : `The address in the provider's discovery document, such as ${p.issuerExample}`}
             adornment={
               <Button size="xs" type="button" variant="ghost" disabled={!issuer.trim()} onClick={() => void discover()}>
                 Check
@@ -1318,7 +1319,7 @@ export function SignInSettings() {
         {data?.providers.length === 0 ? (
           <p className="m-0 px-3 pb-3 text-sm text-fg-muted">None yet: people sign in with a password or a passkey.</p>
         ) : (
-          <Table label="Identity providers" head={["Name", "Issuer", "Roles from groups", "Status", ""]}>
+          <Table label="Identity providers" head={["Name", "Issuer", "Roles from groups", "Status", ""]} minWidth="52rem">
             {(data?.providers ?? []).map((p) => (
               <tr key={p.id}>
                 <Cell>{p.name}</Cell>
@@ -1337,7 +1338,7 @@ export function SignInSettings() {
                 </Cell>
                 <Cell>
                   {isOwner && p.source === "settings" && (
-                    <span className="flex gap-1">
+                    <span className="flex gap-1 whitespace-nowrap">
                       <Button size="xs" variant="ghost" icon={<Pencil />} onClick={() => setForm({ editing: p })}>
                         Change
                       </Button>
