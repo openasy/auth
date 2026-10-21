@@ -13,7 +13,7 @@ Each product embeds it and keeps its own users in its own SQLite file, so a prod
 | Passkeys alone | Sign in with only a passkey when the device verified the person (biometrics or PIN) |
 | OIDC | Any OpenID Connect provider (Entra ID, Okta, Google, Keycloak, Authentik, Zitadel, OpenAsy Identity). Code flow with PKCE, state and nonce; groups mapped to roles on every sign-in |
 | Sessions | Opaque id in an `HttpOnly`, `SameSite=Lax`, `__Host-` cookie; only its hash is stored. 60 minutes idle, 12 hours at most, listed and revocable. Bound to the browser and operating system: a copied cookie used elsewhere ends the session |
-| Roles | Owner, Admin, Editor, Viewer, per product. At least one owner always remains |
+| Roles | Owner, Admin, Editor, Viewer, per product. At least one owner always remains. With `users: true`, also User: people who use the product's applications, such as Identity's, without managing it |
 | API tokens | One product, one role (at most the creator's), always an expiry, shown once, only the hash is stored |
 | CSRF | Unsafe requests with the session cookie must come from the product's origin |
 
@@ -73,6 +73,8 @@ environment, `<P>OIDC_PROVIDER=keycloak` makes them the defaults; the other vari
   sealed with the secrets key and never returned. Removing a provider, or pointing it at another issuer, unlinks the
   people who signed in through it, so another provider's account with the same subject is never taken for theirs.
   `allowInsecureIssuers` allows http:// issuers there, for tests and local providers only.
+- **Groups for the product:** `onOidcSignIn({ userId, provider, groups })` runs after each sign-in through a
+  provider, so a product can keep the groups; Identity does.
 - **Too many groups:** Microsoft Entra ID leaves the groups out of a token when there are too many. With a role
   mapping, the person is refused with what to change, rather than given the wrong role.
 

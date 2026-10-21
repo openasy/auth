@@ -1,5 +1,7 @@
-// Per-product roles (ADR 0003), lowest first. Each role can do everything the ones before it can.
-export const ROLES = ["viewer", "editor", "admin", "owner"] as const;
+// Per-product roles (ADR 0003), lowest first. Each role can do everything the ones before it can. "user" is for
+// products whose members include people who use them without managing them, such as Identity's directory: it is only
+// accepted where the product turns it on (`users`), and gives no access to the product's own API.
+export const ROLES = ["user", "viewer", "editor", "admin", "owner"] as const;
 export type Role = (typeof ROLES)[number];
 
 export const isRole = (v: unknown): v is Role => typeof v === "string" && (ROLES as readonly string[]).includes(v);

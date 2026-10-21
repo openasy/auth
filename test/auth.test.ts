@@ -599,6 +599,69 @@ describe("providers under Settings", () => {
   });
 });
 
+describe("the user role", () => {
+  it("is refused where the product has not turned it on", async () => {
+    const owner = await createOwner(app);
+    await addTotp(app, owner);
+    const r = await owner.json<{ detail: string }>("/api/v1/auth/members", { body: { email: "u@example.com", role: "user" } });
+    expect(r.status).toBe(422);
+    expect(r.body.detail).toBe("role must be owner, admin, editor or viewer.");
+    expect((await app.browser().json<{ users: boolean }>("/api/v1/auth/methods")).body.users).toBe(false);
+    await expect(startProduct({ oidc: [{ id: "x", name: "X", issuer: "https://x.example.com", clientId: "c", defaultRole: "user" }] })).rejects.toThrow(/needs users: true/);
+  });
+
+  it("signs people in to their own account only, where the product turns it on", async () => {
+    await app.close();
+    app = await startProduct({ users: true });
+    const owner = await createOwner(app);
+    await addTotp(app, owner);
+    expect((await app.browser().json<{ users: boolean }>("/api/v1/auth/methods")).body.users).toBe(true);
+    const { browser: u } = await invite(app, owner, "uma@example.com", "user");
+    const me = await u.json<{ user: { role: string }; mfaSetupRequired: boolean }>("/api/v1/auth/me");
+    expect(me.body).toMatchObject({ user: { role: "user" }, mfaSetupRequired: false });
+    expect((await needs(u, "viewer")).status).toBe(403);
+    expect((await u.json("/api/v1/auth/me/sessions")).status).toBe(200);
+    expect((await u.json("/api/v1/auth/members")).status).toBe(403);
+  });
+
+  it("tells the product which groups someone came with", async () => {
+    const idp = await startIdp();
+    const seen: unknown[] = [];
+    await app.close();
+    app = await startProduct({ users: true, onOidcSignIn: (s) => seen.push(s), oidc: [{ id: "corp", name: "Corp", issuer: idp.issuer, clientId: "c", allowInsecure: true, defaultRole: "user" }] });
+    idp.next = { sub: "s1", email: "gus@example.com", email_verified: true, groups: ["eng", "oncall"] };
+    const b = app.browser();
+    await oidcSignIn(b, "corp");
+    expect((await b.json<{ user: { role: string; id: string } }>("/api/v1/auth/me")).body.user.role).toBe("user");
+    expect(seen).toEqual([{ userId: expect.any(String), provider: "corp", groups: ["eng", "oncall"] }]);
+    await idp.close();
+  });
+
+  it("keeps everything when 0.2.0 data is migrated", async () => {
+    const { DatabaseSync } = await import("node:sqlite");
+    const { migrate } = await import("../src/db.ts");
+    const db = new DatabaseSync(":memory:");
+    migrate(db, 3);
+    const t = "2026-10-01T00:00:00.000Z";
+    db.prepare("INSERT INTO auth_users (id, email, name, role, status, password_hash, created_at) VALUES ('u1', 'o@example.com', 'O', 'owner', 'active', 'h', ?)").run(t);
+    db.prepare("INSERT INTO auth_sessions (id_hash, id, user_id, method, created_at, last_seen_at, expires_at) VALUES ('h1', 's1', 'u1', 'password', ?, ?, ?)").run(t, t, t);
+    db.prepare("INSERT INTO auth_identities (provider, subject, user_id, created_at) VALUES ('corp', 'sub', 'u1', ?)").run(t);
+    db.prepare("INSERT INTO auth_recovery_codes (user_id, code_hash) VALUES ('u1', 'c1')").run();
+    db.prepare("INSERT INTO auth_tokens (id, secret_hash, name, role, created_by, created_at, expires_at) VALUES ('t1', 'x', 'CI', 'admin', 'u1', ?, ?)").run(t, t);
+    db.prepare("INSERT INTO auth_providers (id, preset, name, issuer, client_id, scopes, default_role, created_at, updated_at) VALUES ('kc', 'keycloak', 'KC', 'https://kc', 'c', '[]', 'viewer', ?, ?)").run(t, t);
+    migrate(db);
+    const count = (table: string) => (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
+    expect(["auth_users", "auth_sessions", "auth_identities", "auth_recovery_codes", "auth_tokens", "auth_providers"].map(count)).toEqual([1, 1, 1, 1, 1, 1]);
+    expect(db.prepare("SELECT default_role FROM auth_providers").get()).toEqual({ default_role: "viewer" });
+    expect(db.prepare("PRAGMA foreign_keys").get()).toEqual({ foreign_keys: 1 });
+    db.prepare("INSERT INTO auth_users (id, email, name, role, status, created_at) VALUES ('u2', 'u@example.com', 'U', 'user', 'active', ?)").run(t);
+    // The references still work: removing the owner removes their sessions and identities, and keeps their token.
+    db.prepare("DELETE FROM auth_users WHERE id = 'u1'").run();
+    expect([count("auth_sessions"), count("auth_identities"), count("auth_tokens")]).toEqual([0, 0, 1]);
+    expect(db.prepare("SELECT created_by FROM auth_tokens").get()).toEqual({ created_by: null });
+  });
+});
+
 describe("environment", () => {
   it("reads one OIDC provider with role mapping", async () => {
     const { oidcFromEnv } = await import("../src/env.ts");

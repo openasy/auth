@@ -9,8 +9,8 @@ import { PRESETS } from "./presets.ts";
 
 export { auth, AuthApiError, type Me, type Member, type Provider, type Role } from "./client.ts";
 
-const ROLE_NAMES: Record<Role, string> = { owner: "Owner", admin: "Admin", editor: "Editor", viewer: "Viewer" };
-const RANK: Role[] = ["viewer", "editor", "admin", "owner"];
+const ROLE_NAMES: Record<Role, string> = { owner: "Owner", admin: "Admin", editor: "Editor", viewer: "Viewer", user: "User" };
+const RANK: Role[] = ["user", "viewer", "editor", "admin", "owner"];
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
 /** The person closed the browser's passkey prompt: not an error worth showing. */
 const cancelled = (err: unknown) => err instanceof Error && (err.name === "NotAllowedError" || err.name === "AbortError");
@@ -19,6 +19,8 @@ const cancelled = (err: unknown) => err instanceof Error && (err.name === "NotAl
 
 interface AuthContextValue {
   me: Me;
+  /** Whether this product has members with the user role (Identity's directory). */
+  users: boolean;
   /** True when the signed-in person has at least this role. */
   can: (role: Role) => boolean;
   refresh: () => Promise<void>;
@@ -648,6 +650,7 @@ function Gate({ children }: { children: ReactNode }) {
         <AuthContext.Provider
           value={{
             me: stage.me,
+            users: methods?.users ?? false,
             can: (role) => RANK.indexOf(stage.me.user.role) >= RANK.indexOf(role),
             refresh: reload,
             signOut,
@@ -911,14 +914,14 @@ function LinkBox({ title, link, expiresAt, onDone }: { title: string; link: stri
 
 /** Settings → Members: invite, change roles, disable, reset and remove (admins; owners for owners). */
 export function MembersSettings() {
-  const { me } = useAuth();
+  const { me, users } = useAuth();
   const members = useList<Member>(auth.members);
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [role, setRole] = useState<Role>("viewer");
   const [link, setLink] = useState<{ title: string; link: string; expiresAt: string }>();
   const isOwner = me.user.role === "owner";
-  const roles = (isOwner ? RANK : RANK.filter((r) => r !== "owner")).slice().reverse();
+  const roles = RANK.filter((r) => (r !== "owner" || isOwner) && (r !== "user" || users)).reverse();
   const roleOptions = roles.map((r) => ({ value: r, label: ROLE_NAMES[r] }));
 
   const act = async (f: () => Promise<unknown>) => {
@@ -1124,6 +1127,9 @@ const mappingText = (m: Record<string, Role>) =>
     .join("\n");
 
 function ProviderForm({ editing, template, onSaved, onCancel }: { editing?: Provider; template: string; onSaved: () => void; onCancel: () => void }) {
+  const { users } = useAuth();
+  // Owners are made by owners, not by whoever a provider sends.
+  const joinRoles: Role[] = [...(users ? (["user"] as const) : []), "viewer", "editor", "admin"];
   const [presetId, setPresetId] = useState(editing?.preset ?? "keycloak");
   const p = PRESETS.find((x) => x.id === presetId) ?? PRESETS[PRESETS.length - 1]!;
   const [id, setId] = useState(editing?.id ?? "");
@@ -1255,7 +1261,7 @@ function ProviderForm({ editing, template, onSaved, onCancel }: { editing?: Prov
             label="People nobody invited"
             value={defaultRole}
             onChange={(e) => setDefaultRole(e.target.value as Role | "")}
-            options={[{ value: "", label: "Refused" }, ...RANK.slice(0, 3).map((r) => ({ value: r, label: `Join as ${ROLE_NAMES[r]}` }))]}
+            options={[{ value: "", label: "Refused" }, ...joinRoles.map((r) => ({ value: r, label: `Join as ${ROLE_NAMES[r]}` }))]}
           />
           <TextField label="Allowed email domains" placeholder="example.com" hint="Comma-separated. For providers where anyone can have an account, such as Google." value={domains} onChange={(e) => setDomains(e.target.value)} />
         </div>

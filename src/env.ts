@@ -23,7 +23,7 @@ export function oidcFromEnv(env: Record<string, string | undefined>, prefix: str
   const clientId = v("CLIENT_ID");
   if (!clientId) throw new Error(`${prefix}OIDC_CLIENT_ID is required with ${prefix}OIDC_ISSUER`);
   const role = (value: string, what: string): Role => {
-    if (!isRole(value)) throw new Error(`${what}: "${value}" is not owner, admin, editor or viewer`);
+    if (!isRole(value)) throw new Error(`${what}: "${value}" is not owner, admin, editor, viewer or user`);
     return value;
   };
   const presetId = v("PROVIDER");

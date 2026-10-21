@@ -49,6 +49,13 @@ export interface AuthOptions {
   trustedOrigins?: string[];
   /** Sign in with email and password. Default true; turn it off when everyone uses OIDC. */
   passwords?: boolean;
+  /**
+   * Members may have the user role: people who use what the product offers, such as Identity's applications, without
+   * managing the product. Off by default; products whose members all manage them leave it off.
+   */
+  users?: boolean;
+  /** After someone signs in through an identity provider, with the groups it sent; Identity keeps them (ADR 0033). */
+  onOidcSignIn?: (signIn: { userId: string; provider: string; groups: string[] }) => void;
   /** Providers from the environment. More can be added under Settings, Sign-in, and stored in the database. */
   oidc?: OidcProvider[];
   /** For tests and local providers only: providers added under Settings may use an http:// issuer. */
@@ -162,8 +169,15 @@ export function createAuth(opts: AuthOptions) {
   const { db, product, productName } = opts;
   const origin = opts.origin.replace(/\/$/, "");
   const passwords = opts.passwords ?? true;
+  const users = opts.users ?? false;
+  /** A role this product accepts: user only where `users` is on. */
+  const roleAllowed = (r: unknown): r is Role => isRole(r) && (r !== "user" || users);
+  const roleList = users ? "owner, admin, editor, viewer or user" : "owner, admin, editor or viewer";
   const envProviders = opts.oidc ?? [];
   envProviders.forEach(validateProvider);
+  for (const p of envProviders) {
+    if (![...Object.values(p.roleMapping ?? {}), p.defaultRole ?? "viewer"].every(roleAllowed)) throw new Error(`OIDC provider "${p.id}": the user role needs users: true`);
+  }
   if (new Set(envProviders.map((p) => p.id)).size !== envProviders.length) throw new Error("OIDC provider ids must be unique");
   const now = opts.now ?? Date.now;
   const iso = (ms = now()) => new Date(ms).toISOString();
@@ -426,7 +440,7 @@ export function createAuth(opts: AuthOptions) {
     }
     // Without the groups, the mapping would give the wrong role: refuse and say how to fix it at the provider.
     if (p.roleMapping && c.groupsOverage) throw refuse(`${p.name} left your groups out of the token because there are too many. An admin can send only the groups assigned to ${productName}'s registration.`);
-    const mapped = p.roleMapping ? highest(c.groups.map((g) => p.roleMapping![g]).filter(isRole)) : undefined;
+    const mapped = p.roleMapping ? highest(c.groups.map((g) => p.roleMapping![g]).filter(roleAllowed)) : undefined;
     const identity = db.prepare("SELECT user_id FROM auth_identities WHERE provider = ? AND subject = ?").get(p.id, c.subject) as { user_id: string } | undefined;
     let user = identity ? userRow(identity.user_id) : undefined;
     // An existing person is linked only by an email the provider says it has verified.
@@ -558,15 +572,15 @@ export function createAuth(opts: AuthOptions) {
     let roleMapping = current ? (JSON.parse(current.role_mapping) as Record<string, Role>) : {};
     if (b.roleMapping !== undefined) {
       const m = b.roleMapping;
-      if (!m || typeof m !== "object" || Array.isArray(m) || Object.entries(m).some(([g, r]) => !g.trim() || !isRole(r))) {
-        throw bad("roleMapping must map group names to owner, admin, editor or viewer.");
+      if (!m || typeof m !== "object" || Array.isArray(m) || Object.entries(m).some(([g, r]) => !g.trim() || !roleAllowed(r))) {
+        throw bad(`roleMapping must map group names to ${roleList}.`);
       }
       roleMapping = m as Record<string, Role>;
     }
     let defaultRole = current?.default_role ?? null;
     if (b.defaultRole === null) defaultRole = null;
     else if (b.defaultRole !== undefined) {
-      if (!isRole(b.defaultRole)) throw bad("defaultRole must be owner, admin, editor, viewer or null.");
+      if (!roleAllowed(b.defaultRole)) throw bad(`defaultRole must be ${roleList} or null.`);
       defaultRole = b.defaultRole;
     }
     if (b.enabled !== undefined && typeof b.enabled !== "boolean") throw bad("enabled must be true or false.");
@@ -601,7 +615,7 @@ export function createAuth(opts: AuthOptions) {
   }
 
   function memberRole(body: Record<string, unknown>): Role {
-    if (!isRole(body.role)) throw new AuthError(422, "invalid-body", "role must be owner, admin, editor or viewer.");
+    if (!roleAllowed(body.role)) throw new AuthError(422, "invalid-body", `role must be ${roleList}.`);
     return body.role;
   }
 
@@ -621,7 +635,7 @@ export function createAuth(opts: AuthOptions) {
     {
       method: "GET",
       path: "/methods",
-      handle: () => ({ passwords, passkeys: true, providers: providers().map((p) => ({ id: p.id, name: p.name })), setupRequired: userCount() === 0 }),
+      handle: () => ({ passwords, passkeys: true, users, providers: providers().map((p) => ({ id: p.id, name: p.name })), setupRequired: userCount() === 0 }),
     },
 
     // First start: the one-time link printed in the log creates the owner (ADR 0013).
@@ -785,6 +799,7 @@ export function createAuth(opts: AuthOptions) {
               throw new AuthError(401, "invalid-credentials", `${p.name} sign-in could not be verified: ${err.message}`);
             });
           const user = ch.data.setup ? oidcOwner(p, claims, String(ch.data.setup), clientIp(req)) : oidcUser(p, claims, clientIp(req));
+          opts.onOidcSignIn?.({ userId: user.id, provider: p.id, groups: claims.groups });
           redirect(String(ch.data.return), [startSession(req, user, `oidc:${p.id}`, false), clearCookie(C.oidc)]);
         } catch (err) {
           if (!(err instanceof AuthError)) throw err;
@@ -843,7 +858,7 @@ export function createAuth(opts: AuthOptions) {
       method: "GET",
       path: "/me",
       handle: ({ req }) => {
-        const p = sessionPrincipal(req, "viewer", { allowMfaSetup: true });
+        const p = sessionPrincipal(req, "user", { allowMfaSetup: true });
         const row = userRow(p.user.id)!;
         return {
           user: p.user,
@@ -859,7 +874,7 @@ export function createAuth(opts: AuthOptions) {
       method: "PATCH",
       path: "/me",
       handle: async ({ req, body }) => {
-        const p = sessionPrincipal(req, "viewer", { allowMfaSetup: true });
+        const p = sessionPrincipal(req, "user", { allowMfaSetup: true });
         const name = str(await body(), "name", { max: 128 }).trim();
         db.prepare("UPDATE auth_users SET name = ? WHERE id = ?").run(name, p.user.id);
         return toUser(userRow(p.user.id)!);
@@ -869,7 +884,7 @@ export function createAuth(opts: AuthOptions) {
       method: "POST",
       path: "/me/password",
       handle: async ({ req, res, body }) => {
-        const p = sessionPrincipal(req, "viewer", { allowMfaSetup: true });
+        const p = sessionPrincipal(req, "user", { allowMfaSetup: true });
         const b = await body();
         const row = userRow(p.user.id)!;
         if (row.password_hash && !(await verifyPassword(str(b, "currentPassword", { max: 256 }), row.password_hash))) {
@@ -885,7 +900,7 @@ export function createAuth(opts: AuthOptions) {
       method: "GET",
       path: "/me/sessions",
       handle: ({ req }) => {
-        const p = sessionPrincipal(req, "viewer", { allowMfaSetup: true });
+        const p = sessionPrincipal(req, "user", { allowMfaSetup: true });
         const rows = db
           .prepare("SELECT id, method, ip, user_agent, created_at, last_seen_at FROM auth_sessions WHERE user_id = ? AND expires_at > ? ORDER BY last_seen_at DESC")
           .all(p.user.id, iso()) as Array<{ id: string; method: string; ip: string; user_agent: string; created_at: string; last_seen_at: string }>;
@@ -898,7 +913,7 @@ export function createAuth(opts: AuthOptions) {
       method: "DELETE",
       path: "/me/sessions/:id",
       handle: ({ req, res, params }) => {
-        const p = sessionPrincipal(req, "viewer", { allowMfaSetup: true });
+        const p = sessionPrincipal(req, "user", { allowMfaSetup: true });
         const r = db.prepare("DELETE FROM auth_sessions WHERE id = ? AND user_id = ?").run(params[0]!, p.user.id);
         if (r.changes === 0) throw new AuthError(404, "not-found", "No such session.");
         ok(res, undefined, params[0] === p.sessionId ? { "set-cookie": clearCookie(C.session) } : undefined);
@@ -910,7 +925,7 @@ export function createAuth(opts: AuthOptions) {
       method: "POST",
       path: "/me/totp",
       handle: ({ req }) => {
-        const p = sessionPrincipal(req, "viewer", { allowMfaSetup: true });
+        const p = sessionPrincipal(req, "user", { allowMfaSetup: true });
         if (hasTotp(p.user.id)) throw new AuthError(409, "conflict", "An authenticator app is already set up. Remove it first.");
         const secret = base32(randomBytes(20));
         db.prepare("INSERT INTO auth_totp (user_id, secret, created_at) VALUES (?, ?, ?) ON CONFLICT (user_id) DO UPDATE SET secret = excluded.secret, created_at = excluded.created_at").run(
@@ -926,7 +941,7 @@ export function createAuth(opts: AuthOptions) {
       method: "POST",
       path: "/me/totp/confirm",
       handle: async ({ req, body }) => {
-        const p = sessionPrincipal(req, "viewer", { allowMfaSetup: true });
+        const p = sessionPrincipal(req, "user", { allowMfaSetup: true });
         const row = db.prepare("SELECT secret FROM auth_totp WHERE user_id = ? AND confirmed = 0").get(p.user.id) as { secret: string } | undefined;
         if (!row) throw new AuthError(404, "not-found", "Start setting up the authenticator app first.");
         const step = matchTotp(fromBase32(secrets.open(row.secret)), str(await body(), "code", { max: 16 }), now());
@@ -939,7 +954,7 @@ export function createAuth(opts: AuthOptions) {
       method: "DELETE",
       path: "/me/totp",
       handle: ({ req, res }) => {
-        const p = sessionPrincipal(req, "viewer", { allowMfaSetup: true });
+        const p = sessionPrincipal(req, "user", { allowMfaSetup: true });
         requireStrongSession(p);
         if (db.prepare("DELETE FROM auth_totp WHERE user_id = ?").run(p.user.id).changes === 0) throw new AuthError(404, "not-found", "No authenticator app is set up.");
         factorRemoved(p.user.id);
@@ -951,7 +966,7 @@ export function createAuth(opts: AuthOptions) {
       method: "POST",
       path: "/me/recovery-codes",
       handle: ({ req }) => {
-        const p = sessionPrincipal(req, "viewer", { allowMfaSetup: true });
+        const p = sessionPrincipal(req, "user", { allowMfaSetup: true });
         requireStrongSession(p);
         if (!hasMfa(p.user.id)) throw new AuthError(409, "conflict", "Add an authenticator app or a passkey first.");
         return { recoveryCodes: newRecoveryCodes(p.user.id) };
@@ -963,7 +978,7 @@ export function createAuth(opts: AuthOptions) {
       method: "POST",
       path: "/me/passkeys/options",
       handle: async ({ req, res }) => {
-        const p = sessionPrincipal(req, "viewer", { allowMfaSetup: true });
+        const p = sessionPrincipal(req, "user", { allowMfaSetup: true });
         const options = await generateRegistrationOptions({
           rpName: productName,
           rpID,
@@ -982,7 +997,7 @@ export function createAuth(opts: AuthOptions) {
       method: "POST",
       path: "/me/passkeys",
       handle: async ({ req, res, body }) => {
-        const p = sessionPrincipal(req, "viewer", { allowMfaSetup: true });
+        const p = sessionPrincipal(req, "user", { allowMfaSetup: true });
         const ch = readChallenge(parseCookies(req.headers.cookie)[C.webauthn], "webauthn-register");
         if (!ch || ch.userId !== p.user.id) throw new AuthError(400, "invalid-body", "The passkey request expired. Try again.");
         dropChallenge(ch.idHash);
@@ -1016,7 +1031,7 @@ export function createAuth(opts: AuthOptions) {
       method: "DELETE",
       path: "/me/passkeys/:id",
       handle: ({ req, res, params }) => {
-        const p = sessionPrincipal(req, "viewer", { allowMfaSetup: true });
+        const p = sessionPrincipal(req, "user", { allowMfaSetup: true });
         requireStrongSession(p);
         if (db.prepare("DELETE FROM auth_passkeys WHERE id = ? AND user_id = ?").run(params[0]!, p.user.id).changes === 0) throw new AuthError(404, "not-found", "No such passkey.");
         factorRemoved(p.user.id);

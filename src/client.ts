@@ -8,6 +8,8 @@ export type { Role } from "./roles.ts";
 export interface Methods {
   passwords: boolean;
   passkeys: boolean;
+  /** Members may have the user role (Identity's directory). */
+  users: boolean;
   providers: Array<{ id: string; name: string }>;
   setupRequired: boolean;
 }

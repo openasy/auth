@@ -7,7 +7,7 @@ const str = { type: "string" };
 const dateTime = { type: "string", format: "date-time" };
 const nullable = (s: Schema) => ({ anyOf: [s, { type: "null" }] });
 const obj = (properties: Record<string, Schema>, required = Object.keys(properties)) => ({ type: "object", required, properties });
-const role = { type: "string", enum: ["owner", "admin", "editor", "viewer"] };
+const role = { type: "string", enum: ["owner", "admin", "editor", "viewer", "user"], description: "user only in products that turn it on: people who use the product's applications without managing it." };
 const tokenRole = { type: "string", enum: ["admin", "editor", "viewer"] };
 
 const schemas: Record<string, Schema> = {
@@ -42,6 +42,7 @@ const schemas: Record<string, Schema> = {
   AuthMethods: obj({
     passwords: { type: "boolean" },
     passkeys: { type: "boolean" },
+    users: { type: "boolean", description: "Members may have the user role." },
     providers: { type: "array", items: obj({ id: str, name: str }) },
     setupRequired: { type: "boolean", description: "No owner yet: open the setup link from the log." },
   }),
