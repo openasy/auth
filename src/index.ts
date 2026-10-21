@@ -54,6 +54,15 @@ export interface AuthOptions {
    * managing the product. Off by default; products whose members all manage them leave it off.
    */
   users?: boolean;
+  /**
+   * Passwords another directory keeps, such as Active Directory for people Identity reads from it (ADR 0034): their
+   * password is checked there at sign-in, and they cannot set one here.
+   */
+  externalPasswords?: {
+    /** The directory that keeps this person's password, by name, or undefined when this product does. */
+    managedBy: (userId: string) => string | undefined;
+    verify: (userId: string, password: string) => Promise<boolean>;
+  };
   /** After someone signs in through an identity provider, with the groups it sent; Identity keeps them (ADR 0033). */
   onOidcSignIn?: (signIn: { userId: string; provider: string; groups: string[] }) => void;
   /** Providers from the environment. More can be added under Settings, Sign-in, and stored in the database. */
@@ -115,8 +124,11 @@ export interface User {
   providers: string[];
 }
 
+/** The second factor a session was opened with, or added during it. A passkey alone is method "passkey" and factor "passkey". */
+export type Factor = "totp" | "passkey" | "recovery-code";
+
 export type Principal =
-  | { kind: "session"; user: User; role: Role; sessionId: string; method: string; mfa: boolean }
+  | { kind: "session"; user: User; role: Role; sessionId: string; method: string; mfa: boolean; factor: Factor | null }
   | { kind: "token"; tokenId: string; name: string; role: Role };
 
 interface UserRow {
@@ -289,20 +301,27 @@ export function createAuth(opts: AuthOptions) {
 
   // ---- Sessions -------------------------------------------------------------------------------------------------
 
-  function startSession(req: IncomingMessage, user: UserRow, method: string, mfa: boolean): string {
+  function startSession(req: IncomingMessage, user: UserRow, method: string, mfa: boolean, factor: Factor | null = null): string {
     const token = randomToken();
     const t = now();
     db.prepare(
-      "INSERT INTO auth_sessions (id_hash, id, user_id, method, mfa, ip, user_agent, device, created_at, last_seen_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    ).run(sha256(token), randomUUID(), user.id, method, mfa ? 1 : 0, clientIp(req), (req.headers["user-agent"] ?? "").slice(0, 256), deviceOf(req), iso(t), iso(t), iso(t + absoluteMs));
+      "INSERT INTO auth_sessions (id_hash, id, user_id, method, mfa, factor, ip, user_agent, device, created_at, last_seen_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(sha256(token), randomUUID(), user.id, method, mfa ? 1 : 0, factor, clientIp(req), (req.headers["user-agent"] ?? "").slice(0, 256), deviceOf(req), iso(t), iso(t), iso(t + absoluteMs));
     db.prepare("UPDATE auth_users SET last_sign_in_at = ? WHERE id = ?").run(iso(t), user.id);
     emit({ type: "sign-in", actor: user.id, method, ip: clientIp(req) });
     return setCookie(C.session, token, Math.floor(absoluteMs / 1000));
   }
 
-  function signedIn(res: ServerResponse, req: IncomingMessage, user: UserRow, method: string, mfa: boolean, extra: string[] = []) {
-    const set = startSession(req, user, method, mfa);
+  function signedIn(res: ServerResponse, req: IncomingMessage, user: UserRow, method: string, mfa: boolean, extra: string[] = [], factor: Factor | null = null) {
+    const set = startSession(req, user, method, mfa, factor);
     sendJson(res, 200, { status: "signed-in", user: toUser(user), mfaSetupRequired: mfaSetupRequired(user, method) }, { "set-cookie": [set, ...extra] });
+  }
+
+  /** The directory that keeps someone's password, when it is not this product. */
+  const managedBy = (userId: string) => opts.externalPasswords?.managedBy(userId);
+  function ownPassword(userId: string) {
+    const by = managedBy(userId);
+    if (by) throw new AuthError(409, "conflict", `This password is kept in ${by}: change it there.`);
   }
 
   /** Owners and admins who signed in with a password must add a second factor before anything else. */
@@ -313,9 +332,9 @@ export function createAuth(opts: AuthOptions) {
     if (!token) return undefined;
     const row = db
       .prepare(
-        "SELECT s.id AS session_id, s.id_hash, s.method, s.mfa, s.device, s.last_seen_at, s.expires_at, u.* FROM auth_sessions s JOIN auth_users u ON u.id = s.user_id WHERE s.id_hash = ?",
+        "SELECT s.id AS session_id, s.id_hash, s.method, s.mfa, s.factor, s.device, s.last_seen_at, s.expires_at, u.* FROM auth_sessions s JOIN auth_users u ON u.id = s.user_id WHERE s.id_hash = ?",
       )
-      .get(sha256(token)) as (UserRow & { session_id: string; id_hash: string; method: string; mfa: number; device: string; last_seen_at: string; expires_at: string }) | undefined;
+      .get(sha256(token)) as (UserRow & { session_id: string; id_hash: string; method: string; mfa: number; factor: Factor | null; device: string; last_seen_at: string; expires_at: string }) | undefined;
     if (!row) return undefined;
     if (row.device && row.device !== deviceOf(req)) {
       // The cookie is being used from another browser or system than the one that signed in: end the session.
@@ -329,7 +348,7 @@ export function createAuth(opts: AuthOptions) {
       return undefined;
     }
     if (t - Date.parse(row.last_seen_at) > 60_000) db.prepare("UPDATE auth_sessions SET last_seen_at = ? WHERE id_hash = ?").run(iso(t), row.id_hash);
-    return { user: row as UserRow, sessionId: row.session_id, method: row.method, mfa: row.mfa === 1 };
+    return { user: row as UserRow, sessionId: row.session_id, method: row.method, mfa: row.mfa === 1, factor: row.factor };
   }
 
   /** Requests with the session cookie must come from the product's own pages. */
@@ -366,7 +385,7 @@ export function createAuth(opts: AuthOptions) {
       if (!s) throw new AuthError(401, "unauthenticated", "Sign in to continue.");
       checkOrigin(req);
       if (!allowMfaSetup && mfaSetupRequired(s.user, s.method)) throw new AuthError(403, "mfa-setup-required", "Set up two-step verification to continue.");
-      p = { kind: "session", user: toUser(s.user), role: s.user.role, sessionId: s.sessionId, method: s.method, mfa: s.mfa };
+      p = { kind: "session", user: toUser(s.user), role: s.user.role, sessionId: s.sessionId, method: s.method, mfa: s.mfa, factor: s.factor };
     }
     if (!atLeast(p.role, min)) throw new AuthError(403, "forbidden", `This needs the ${min} role or higher.`);
     return p;
@@ -408,8 +427,9 @@ export function createAuth(opts: AuthOptions) {
   }
 
   /** After the first factor is added, the user gets recovery codes and the session counts as verified. */
-  function factorAdded(p: Extract<Principal, { kind: "session" }>, req: IncomingMessage, method: string) {
-    db.prepare("UPDATE auth_sessions SET mfa = 1 WHERE id = ?").run(p.sessionId);
+  function factorAdded(p: Extract<Principal, { kind: "session" }>, req: IncomingMessage, method: Factor) {
+    // Adding a factor proves it is at hand, so the session counts as opened with it.
+    db.prepare("UPDATE auth_sessions SET mfa = 1, factor = ? WHERE id = ?").run(method, p.sessionId);
     emit({ type: "mfa-enabled", actor: p.user.id, method, ip: clientIp(req) });
     const left = (db.prepare("SELECT COUNT(*) AS n FROM auth_recovery_codes WHERE user_id = ? AND used_at IS NULL").get(p.user.id) as { n: number }).n;
     return left === 0 ? newRecoveryCodes(p.user.id) : undefined;
@@ -668,8 +688,12 @@ export function createAuth(opts: AuthOptions) {
         const ip = clientIp(req);
         throttle([[`ip:${ip}`, 50], [`ip:${ip}:${email}`, 10]]);
         const user = userByEmail(email);
-        const valid = await verifyPassword(password, user?.password_hash ?? DUMMY_HASH);
-        if (!user || !user.password_hash || !valid || user.status !== "active") {
+        // A password another directory keeps is checked there; the local hash is still computed, so the answer takes
+        // as long either way.
+        const external = user && managedBy(user.id);
+        const localValid = await verifyPassword(password, (!external && user?.password_hash) || DUMMY_HASH);
+        const valid = external ? await opts.externalPasswords!.verify(user!.id, password).catch(() => false) : localValid && !!user?.password_hash;
+        if (!user || !valid || user.status !== "active") {
           fail([`ip:${ip}`, `ip:${ip}:${email}`]);
           emit({ type: "sign-in-failed", actor: user?.id, method: "password", ip, detail: user && valid ? `account ${user.status}` : "wrong email or password" });
           throw new AuthError(401, "invalid-credentials", "Wrong email or password.");
@@ -708,7 +732,7 @@ export function createAuth(opts: AuthOptions) {
         dropChallenge(ch.idHash);
         const user = userRow(ch.userId)!;
         if (user.status !== "active") throw new AuthError(401, "invalid-credentials", "Your account is disabled.");
-        signedIn(res, req, user, "password", true, [clearCookie(C.mfa)]);
+        signedIn(res, req, user, "password", true, [clearCookie(C.mfa)], code ? "totp" : "recovery-code");
       },
     },
 
@@ -757,7 +781,7 @@ export function createAuth(opts: AuthOptions) {
         if (typeof ch.data.mfa === "string") dropChallenge(ch.data.mfa);
         const user = userRow(key.user_id)!;
         if (user.status !== "active") throw failed();
-        signedIn(res, req, user, ch.userId ? "password" : "passkey", true, [clearCookie(C.webauthn), clearCookie(C.mfa)]);
+        signedIn(res, req, user, ch.userId ? "password" : "passkey", true, [clearCookie(C.webauthn), clearCookie(C.mfa)], "passkey");
       },
     },
 
@@ -841,6 +865,7 @@ export function createAuth(opts: AuthOptions) {
         const ch = readChallenge(params[0], "invite") ?? readChallenge(params[0], "reset");
         if (!ch?.userId) throw new AuthError(404, "not-found", "This link is used or expired. Ask an admin for a new one.");
         const b = await body();
+        ownPassword(ch.userId);
         const hash = await hashPassword(newPassword(b));
         const u = userRow(ch.userId)!;
         if (u.status === "disabled") throw new AuthError(403, "forbidden", "Your account is disabled.");
@@ -862,7 +887,8 @@ export function createAuth(opts: AuthOptions) {
         const row = userRow(p.user.id)!;
         return {
           user: p.user,
-          session: { id: p.sessionId, method: p.method, mfa: p.mfa },
+          session: { id: p.sessionId, method: p.method, mfa: p.mfa, factor: p.factor },
+          passwordManagedBy: opts.externalPasswords?.managedBy(p.user.id) ?? null,
           mfaSetupRequired: mfaSetupRequired(row, p.method),
           hasPassword: !!row.password_hash,
           passkeys: passkeys(p.user.id).map((k) => ({ id: k.id, name: k.name, createdAt: k.created_at, lastUsedAt: k.last_used_at })),
@@ -886,6 +912,7 @@ export function createAuth(opts: AuthOptions) {
       handle: async ({ req, res, body }) => {
         const p = sessionPrincipal(req, "user", { allowMfaSetup: true });
         const b = await body();
+        ownPassword(p.user.id);
         const row = userRow(p.user.id)!;
         if (row.password_hash && !(await verifyPassword(str(b, "currentPassword", { max: 256 }), row.password_hash))) {
           throw new AuthError(401, "invalid-credentials", "The current password is wrong.");
@@ -1122,6 +1149,8 @@ export function createAuth(opts: AuthOptions) {
         mayManage(p.role, target.role);
         if (target.id === p.user.id) throw new AuthError(409, "conflict", "Change your own password and factors under your account.");
         const b = await body();
+        // Second factors can still be reset; the password itself is the other directory's.
+        if (b.mfa !== true) ownPassword(target.id);
         const mfa = b.mfa === true;
         revokeSessions(target.id);
         if (mfa) {
@@ -1129,6 +1158,11 @@ export function createAuth(opts: AuthOptions) {
           db.prepare("DELETE FROM auth_passkeys WHERE user_id = ?").run(target.id);
           db.prepare("DELETE FROM auth_recovery_codes WHERE user_id = ?").run(target.id);
           emit({ type: "mfa-removed", actor: p.user.id, target: target.id, ip: clientIp(req), detail: "reset by admin" });
+        }
+        // Someone whose password another directory keeps signs in with it again: there is no link to send.
+        if (managedBy(target.id)) {
+          emit({ type: "member-updated", actor: p.user.id, target: target.id, ip: clientIp(req), detail: "second factors reset" });
+          return sendJson(res, 200, { link: null, linkExpiresAt: null });
         }
         const kind = target.status === "invited" ? "invite" : "reset";
         db.prepare("DELETE FROM auth_challenges WHERE user_id = ? AND kind = ?").run(target.id, kind);

@@ -135,6 +135,8 @@ const MIGRATIONS: Array<string | Migration> = [
      UPDATE auth_providers SET default_role = default_role_old;
      ALTER TABLE auth_providers DROP COLUMN default_role_old`,
   },
+  `-- 0.4.0: which second factor opened a session (totp, passkey or recovery-code), for products that ask for a passkey.
+   ALTER TABLE auth_sessions ADD COLUMN factor TEXT`,
 ];
 
 /** Migrates forward; `until` stops after that many migrations, for tests of upgrades. */

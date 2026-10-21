@@ -760,7 +760,12 @@ export function AccountSettings() {
         </form>
       </Panel>
 
-      {me.hasPassword && (
+      {me.passwordManagedBy && (
+        <Panel title="Password" description={`Kept in ${me.passwordManagedBy}. Change it there; you sign in with it here.`}>
+          {null}
+        </Panel>
+      )}
+      {me.hasPassword && !me.passwordManagedBy && (
         <Panel title="Password" description="Changing it signs you out everywhere else.">
           <form
             className="flex flex-col gap-2.5"
@@ -988,7 +993,8 @@ export function MembersSettings() {
                         onClick={() =>
                           void act(async () => {
                             const r = await auth.resetMember(m.id, { mfa: confirm(`Also remove ${m.email}'s second factors? Choose Cancel to keep them.`) });
-                            setLink({ title: `Password link for ${m.email}`, link: r.link, expiresAt: r.linkExpiresAt });
+                            // Someone whose password another directory keeps gets no link: they sign in with it again.
+                            if (r.link && r.linkExpiresAt) setLink({ title: `Password link for ${m.email}`, link: r.link, expiresAt: r.linkExpiresAt });
                           })
                         }
                       >

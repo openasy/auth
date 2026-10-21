@@ -61,7 +61,8 @@ const schemas: Record<string, Schema> = {
   AuthMfaRequired: obj({ status: { const: "mfa-required" }, methods: { type: "array", items: { type: "string", enum: ["totp", "passkey", "recovery-code"] } } }),
   AuthMe: obj({
     user: ref("AuthMember"),
-    session: obj({ id: str, method: str, mfa: { type: "boolean" } }),
+    session: obj({ id: str, method: str, mfa: { type: "boolean" }, factor: nullable({ type: "string", enum: ["totp", "passkey", "recovery-code"], description: "The second factor the session was opened with, or added during it." }) }),
+    passwordManagedBy: nullable({ type: "string", description: "The directory that keeps this person's password, such as Active Directory; they change it there." }),
     mfaSetupRequired: { type: "boolean" },
     hasPassword: { type: "boolean" },
     passkeys: { type: "array", items: obj({ id: str, name: str, createdAt: dateTime, lastUsedAt: nullable(dateTime) }) },
@@ -70,6 +71,10 @@ const schemas: Record<string, Schema> = {
   AuthSession: obj({ id: str, method: str, ip: str, userAgent: str, createdAt: dateTime, lastSeenAt: dateTime, current: { type: "boolean" } }),
   AuthRecoveryCodes: obj({ recoveryCodes: { type: "array", items: str, minItems: 10, maxItems: 10 } }),
   AuthLink: obj({ link: { type: "string", format: "uri" }, linkExpiresAt: dateTime }),
+  AuthResetLink: obj({
+    link: nullable({ type: "string", format: "uri", description: "null for someone whose password another directory keeps: only their second factors were reset." }),
+    linkExpiresAt: nullable(dateTime),
+  }),
   AuthToken: obj({
     id: str,
     name: str,
@@ -355,7 +360,7 @@ const paths = {
       role: "admin",
       params: ["id"],
       body: obj({ mfa: { type: "boolean" } }, []),
-      responses: { "200": json(ref("AuthLink")), ...problems(...unsafe, 401, 404, 409) },
+      responses: { "200": json(ref("AuthResetLink")), ...problems(...unsafe, 401, 404, 409) },
     }),
   },
   "/api/v1/auth/tokens": {

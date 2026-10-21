@@ -28,7 +28,9 @@ export interface Member {
 
 export interface Me {
   user: Member;
-  session: { id: string; method: string; mfa: boolean };
+  session: { id: string; method: string; mfa: boolean; factor: "totp" | "passkey" | "recovery-code" | null };
+  /** The directory that keeps this person's password, such as Active Directory, when it is not this product. */
+  passwordManagedBy: string | null;
   mfaSetupRequired: boolean;
   hasPassword: boolean;
   passkeys: Array<{ id: string; name: string; createdAt: string; lastUsedAt: string | null }>;
@@ -172,7 +174,7 @@ export const auth = {
   invite: (b: { email: string; name?: string; role: Role }) => call<{ member: Member; link: string; linkExpiresAt: string }>("/members", { body: b }),
   updateMember: (id: string, b: { role?: Role; status?: "active" | "disabled" }) => call<Member>(`/members/${encodeURIComponent(id)}`, { method: "PATCH", body: b }),
   removeMember: (id: string) => call<void>(`/members/${encodeURIComponent(id)}`, { method: "DELETE" }),
-  resetMember: (id: string, opts: { mfa?: boolean } = {}) => call<{ link: string; linkExpiresAt: string }>(`/members/${encodeURIComponent(id)}/reset`, { body: opts }),
+  resetMember: (id: string, opts: { mfa?: boolean } = {}) => call<{ link: string | null; linkExpiresAt: string | null }>(`/members/${encodeURIComponent(id)}/reset`, { body: opts }),
 
   tokens: () => call<{ tokens: ApiToken[] }>("/tokens").then((r) => r.tokens),
   /** The secret is in `token` and is never shown again. */

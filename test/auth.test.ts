@@ -662,6 +662,60 @@ describe("the user role", () => {
   });
 });
 
+describe("which second factor opened a session", () => {
+  type Me = { session: { method: string; factor: string | null }; passwordManagedBy: string | null };
+  it("is kept for a code, a passkey and a recovery code, and when a factor is added", async () => {
+    const owner = await createOwner(app);
+    expect((await owner.json<Me>("/api/v1/auth/me")).body.session).toMatchObject({ method: "password", factor: null });
+    const { secret, recoveryCodes } = await addTotp(app, owner);
+    expect((await owner.json<Me>("/api/v1/auth/me")).body.session.factor).toBe("totp");
+
+    const withCode = app.browser();
+    await signIn(withCode);
+    await withCode.json("/api/v1/auth/login/mfa", { body: { code: codeAt(secret, app.clock.t) } });
+    expect((await withCode.json<Me>("/api/v1/auth/me")).body.session).toMatchObject({ method: "password", factor: "totp" });
+
+    const withRecovery = app.browser();
+    await signIn(withRecovery);
+    await withRecovery.json("/api/v1/auth/login/mfa", { body: { recoveryCode: recoveryCodes[0] } });
+    expect((await withRecovery.json<Me>("/api/v1/auth/me")).body.session.factor).toBe("recovery-code");
+
+    const key = new SoftPasskey(app.origin);
+    const options = (await owner.json<{ challenge: string; rp: { id: string } }>("/api/v1/auth/me/passkeys/options", { body: {} })).body;
+    await owner.json("/api/v1/auth/me/passkeys", { body: { response: key.register(options) } });
+    expect((await owner.json<Me>("/api/v1/auth/me")).body.session.factor).toBe("passkey");
+    const alone = app.browser();
+    const opts = (await alone.json<{ challenge: string; rpId: string }>("/api/v1/auth/login/passkey/options", { body: {} })).body;
+    await alone.json("/api/v1/auth/login/passkey", { body: { response: key.authenticate(opts) } });
+    expect((await alone.json<Me>("/api/v1/auth/me")).body.session).toMatchObject({ method: "passkey", factor: "passkey" });
+  });
+});
+
+describe("passwords another directory keeps", () => {
+  it("checks them there, and never takes one here", async () => {
+    let managed = "";
+    await app.close();
+    app = await startProduct({
+      externalPasswords: { managedBy: (id) => (id === managed ? "Active Directory" : undefined), verify: async (_id, pw) => pw === "the AD password" },
+    });
+    const owner = await createOwner(app);
+    await addTotp(app, owner);
+    const { id, browser } = await invite(app, owner, "dee@example.com", "viewer");
+    managed = id;
+    type Me = { passwordManagedBy: string | null };
+    expect((await browser.json<Me>("/api/v1/auth/me")).body.passwordManagedBy).toBe("Active Directory");
+
+    // The password set with the invitation no longer works: Active Directory decides.
+    expect((await app.browser().json("/api/v1/auth/login", { body: { email: "dee@example.com", password: PASSWORD } })).status).toBe(401);
+    const b = app.browser();
+    expect((await b.json<{ status: string }>("/api/v1/auth/login", { body: { email: "dee@example.com", password: "the AD password" } })).body.status).toBe("signed-in");
+
+    expect((await b.json<{ detail: string }>("/api/v1/auth/me/password", { body: { currentPassword: "x", newPassword: "a brand new password" } })).body.detail).toMatch(/kept in Active Directory/);
+    expect((await owner.json(`/api/v1/auth/members/${id}/reset`, { body: {} })).status).toBe(409);
+    expect((await owner.json<{ link: string | null }>(`/api/v1/auth/members/${id}/reset`, { body: { mfa: true } })).body).toEqual({ link: null, linkExpiresAt: null });
+  });
+});
+
 describe("environment", () => {
   it("reads one OIDC provider with role mapping", async () => {
     const { oidcFromEnv } = await import("../src/env.ts");

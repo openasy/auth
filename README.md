@@ -75,6 +75,10 @@ environment, `<P>OIDC_PROVIDER=keycloak` makes them the defaults; the other vari
   `allowInsecureIssuers` allows http:// issuers there, for tests and local providers only.
 - **A ready Keycloak:** [`examples/keycloak`](./examples/keycloak) starts Keycloak with a realm in which every OpenAsy
   product is a client, with groups and a groups claim. CI signs in through it on every change.
+- **Passwords another directory keeps:** `externalPasswords: { managedBy, verify }` lets a product say whose password
+  lives elsewhere, such as Active Directory: it is checked there at sign-in, and they cannot set one here.
+- **Which second factor:** a session knows whether it was opened with a code, a passkey or a recovery code
+  (`factor`), so a product can ask for a passkey.
 - **Groups for the product:** `onOidcSignIn({ userId, provider, groups })` runs after each sign-in through a
   provider, so a product can keep the groups; Identity does.
 - **Too many groups:** Microsoft Entra ID leaves the groups out of a token when there are too many. With a role
