@@ -9,7 +9,8 @@ beforeEach(async () => {
 });
 afterEach(() => app.close());
 
-const signIn = (b: Browser, email = "owner@example.com", password = PASSWORD) => b.json<{ status: string; methods?: string[]; mfaSetupRequired?: boolean }>("/api/v1/auth/login", { body: { email, password } });
+const signIn = (b: Browser, email = "owner@example.com", password = PASSWORD) =>
+  b.json<{ status: string; methods?: string[]; mfaSetupRequired?: boolean }>("/api/v1/auth/login", { body: { email, password } });
 const needs = (b: Browser, role: string) => b.json<{ code?: string; kind?: string }>(`/api/v1/needs/${role}`);
 
 describe("crypto", () => {
@@ -62,7 +63,9 @@ describe("first start", () => {
     const link = app.auth.setupLink()!;
     const token = new URL(link).searchParams.get("setup")!;
     const b = app.browser();
-    const r = await b.json<{ user: { role: string }; mfaSetupRequired: boolean }>("/api/v1/auth/setup", { body: { token, name: "Olivia", email: "Owner@Example.com", password: PASSWORD } });
+    const r = await b.json<{ user: { role: string }; mfaSetupRequired: boolean }>("/api/v1/auth/setup", {
+      body: { token, name: "Olivia", email: "Owner@Example.com", password: PASSWORD },
+    });
     expect(r.status).toBe(200);
     expect(r.body.user).toMatchObject({ role: "owner", email: "owner@example.com" });
     expect(r.body.mfaSetupRequired).toBe(true);
@@ -357,7 +360,11 @@ describe("API tokens", () => {
 
   it("can be revoked, and cannot create tokens or exceed their creator", async () => {
     const r = await owner.json<{ token: string; id: string }>("/api/v1/auth/tokens", { body: { name: "CI", role: "admin" } });
-    const viaToken = await fetch(`${app.origin}/api/v1/auth/tokens`, { method: "POST", headers: { authorization: `Bearer ${r.body.token}`, "content-type": "application/json" }, body: JSON.stringify({ name: "x", role: "admin" }) });
+    const viaToken = await fetch(`${app.origin}/api/v1/auth/tokens`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${r.body.token}`, "content-type": "application/json" },
+      body: JSON.stringify({ name: "x", role: "admin" }),
+    });
     expect(viaToken.status).toBe(403);
     expect((await owner.json(`/api/v1/auth/tokens/${r.body.id}`, { method: "DELETE" })).status).toBe(204);
     expect((await bearer(r.body.token)).status).toBe(401);
@@ -381,7 +388,9 @@ describe("OIDC", () => {
 
   async function withProvider(extra: Record<string, unknown> = {}) {
     await app.close();
-    app = await startProduct({ oidc: [{ id: "corp", name: "Corp SSO", issuer: idp.issuer, clientId: "vulns", clientSecret: "s3cret", allowInsecure: true, ...extra }] });
+    app = await startProduct({
+      oidc: [{ id: "corp", name: "Corp SSO", issuer: idp.issuer, clientId: "vulns", clientSecret: "s3cret", allowInsecure: true, ...extra }],
+    });
     return app;
   }
 
@@ -484,13 +493,22 @@ describe("OIDC", () => {
 
   it("refuses when the provider left the groups out of the token", async () => {
     await withProvider({ roleMapping: { "vulns-admins": "admin" } });
-    idp.next = { sub: "u8", email: "max@example.com", email_verified: true, _claim_names: { groups: "src1" }, _claim_sources: { src1: { endpoint: "https://graph.example" } } };
+    idp.next = {
+      sub: "u8",
+      email: "max@example.com",
+      email_verified: true,
+      _claim_names: { groups: "src1" },
+      _claim_sources: { src1: { endpoint: "https://graph.example" } },
+    };
     expect(decodeURIComponent((await oidcSignIn(app.browser(), "corp")).location)).toMatch(/left your groups out of the token/);
   });
 
   it("makes the first person the owner through a provider, with the setup link", async () => {
     await app.close();
-    app = await startProduct({ passwords: false, oidc: [{ id: "corp", name: "Corp SSO", issuer: idp.issuer, clientId: "vulns", clientSecret: "s3cret", allowInsecure: true }] });
+    app = await startProduct({
+      passwords: false,
+      oidc: [{ id: "corp", name: "Corp SSO", issuer: idp.issuer, clientId: "vulns", clientSecret: "s3cret", allowInsecure: true }],
+    });
     const token = new URL(app.auth.setupLink()!).searchParams.get("setup")!;
     // A password owner could never sign in with passwords off.
     const pw = await app.browser().json<{ detail: string }>("/api/v1/auth/setup", { body: { token, name: "O", email: "o@example.com", password: PASSWORD } });
@@ -504,7 +522,11 @@ describe("OIDC", () => {
     const atIdp = await fetch(start.headers.get("location")!, { redirect: "manual" });
     const back = new URL(atIdp.headers.get("location")!);
     expect((await b.fetch(back.pathname + back.search)).headers.get("location")).toBe("/");
-    expect((await b.json<{ user: { role: string; email: string; providers: string[] } }>("/api/v1/auth/me")).body.user).toMatchObject({ role: "owner", email: "olivia@example.com", providers: ["corp"] });
+    expect((await b.json<{ user: { role: string; email: string; providers: string[] } }>("/api/v1/auth/me")).body.user).toMatchObject({
+      role: "owner",
+      email: "olivia@example.com",
+      providers: ["corp"],
+    });
     expect(app.events.find((e) => e.type === "setup")).toMatchObject({ method: "oidc:corp" });
     // The link is used: nobody else becomes owner with it.
     expect(app.auth.setupLink()).toBeUndefined();
@@ -524,25 +546,46 @@ describe("providers under Settings", () => {
   beforeEach(async () => {
     idp = await startIdp();
     await app.close();
-    app = await startProduct({ allowInsecureIssuers: true, secretsKey: randomBytes(32), oidc: [{ id: "env-sso", name: "Env", issuer: "https://env.example.com", clientId: "c" }] });
+    app = await startProduct({
+      allowInsecureIssuers: true,
+      secretsKey: randomBytes(32),
+      oidc: [{ id: "env-sso", name: "Env", issuer: "https://env.example.com", clientId: "c" }],
+    });
     owner = await createOwner(app);
     await addTotp(app, owner);
   });
   afterEach(() => idp.close());
 
   const add = (b: Browser, body: Record<string, unknown>) => b.json<Record<string, unknown>>("/api/v1/auth/providers", { body });
-  const keycloak = () => ({ preset: "keycloak", issuer: idp.issuer, clientId: "vulns", clientSecret: "s3cret", groupsClaim: "realm_access.roles", roleMapping: { "ops-admin": "admin" } });
+  const keycloak = () => ({
+    preset: "keycloak",
+    issuer: idp.issuer,
+    clientId: "vulns",
+    clientSecret: "s3cret",
+    groupsClaim: "realm_access.roles",
+    roleMapping: { "ops-admin": "admin" },
+  });
 
   it("adds a provider from a preset, keeps its secret sealed, and signs people in with it", async () => {
     const r = await add(owner, keycloak());
     expect(r.status).toBe(201);
-    expect(r.body).toMatchObject({ id: "keycloak", name: "Keycloak", source: "settings", hasClientSecret: true, scopes: ["openid", "email", "profile"], redirectUri: `${app.origin}/api/v1/auth/oidc/keycloak/callback` });
+    expect(r.body).toMatchObject({
+      id: "keycloak",
+      name: "Keycloak",
+      source: "settings",
+      hasClientSecret: true,
+      scopes: ["openid", "email", "profile"],
+      redirectUri: `${app.origin}/api/v1/auth/oidc/keycloak/callback`,
+    });
     expect(JSON.stringify(r.body)).not.toContain("s3cret");
     const stored = app.db.prepare("SELECT client_secret FROM auth_providers WHERE id = 'keycloak'").get() as { client_secret: string };
     expect(stored.client_secret).toMatch(/^v1:/);
 
     const methods = (await app.browser().json<{ providers: unknown[] }>("/api/v1/auth/methods")).body.providers;
-    expect(methods).toEqual([{ id: "env-sso", name: "Env" }, { id: "keycloak", name: "Keycloak" }]);
+    expect(methods).toEqual([
+      { id: "env-sso", name: "Env" },
+      { id: "keycloak", name: "Keycloak" },
+    ]);
     idp.next = { sub: "k1", email: "kim@example.com", email_verified: true, realm_access: { roles: ["ops-admin"] } };
     const b = app.browser();
     expect((await oidcSignIn(b, "keycloak")).location).toBe("/");
@@ -599,7 +642,10 @@ describe("providers under Settings", () => {
     const linked = () => (app.db.prepare("SELECT COUNT(*) AS n FROM auth_identities WHERE provider = 'keycloak'").get() as { n: number }).n;
     expect(linked()).toBe(1);
 
-    const patched = await owner.json<Record<string, unknown>>("/api/v1/auth/providers/keycloak", { method: "PATCH", body: { name: "Ops SSO", issuer: `${idp.issuer}/` } });
+    const patched = await owner.json<Record<string, unknown>>("/api/v1/auth/providers/keycloak", {
+      method: "PATCH",
+      body: { name: "Ops SSO", issuer: `${idp.issuer}/` },
+    });
     expect(patched.body).toMatchObject({ name: "Ops SSO", hasClientSecret: true });
     expect(linked()).toBe(0);
     expect(app.events.map((e) => e.type)).toContain("provider-updated");
@@ -627,7 +673,9 @@ describe("the user role", () => {
     expect(r.status).toBe(422);
     expect(r.body.detail).toBe("role must be owner, admin, editor or viewer.");
     expect((await app.browser().json<{ users: boolean }>("/api/v1/auth/methods")).body.users).toBe(false);
-    await expect(startProduct({ oidc: [{ id: "x", name: "X", issuer: "https://x.example.com", clientId: "c", defaultRole: "user" }] })).rejects.toThrow(/needs users: true/);
+    await expect(startProduct({ oidc: [{ id: "x", name: "X", issuer: "https://x.example.com", clientId: "c", defaultRole: "user" }] })).rejects.toThrow(
+      /needs users: true/,
+    );
   });
 
   it("signs people in to their own account only, where the product turns it on", async () => {
@@ -648,7 +696,11 @@ describe("the user role", () => {
     const idp = await startIdp();
     const seen: unknown[] = [];
     await app.close();
-    app = await startProduct({ users: true, onOidcSignIn: (s) => seen.push(s), oidc: [{ id: "corp", name: "Corp", issuer: idp.issuer, clientId: "c", allowInsecure: true, defaultRole: "user" }] });
+    app = await startProduct({
+      users: true,
+      onOidcSignIn: (s) => seen.push(s),
+      oidc: [{ id: "corp", name: "Corp", issuer: idp.issuer, clientId: "c", allowInsecure: true, defaultRole: "user" }],
+    });
     idp.next = { sub: "s1", email: "gus@example.com", email_verified: true, groups: ["eng", "oncall"] };
     const b = app.browser();
     await oidcSignIn(b, "corp");
@@ -663,12 +715,21 @@ describe("the user role", () => {
     const db = new DatabaseSync(":memory:");
     migrate(db, 3);
     const t = "2026-10-01T00:00:00.000Z";
-    db.prepare("INSERT INTO auth_users (id, email, name, role, status, password_hash, created_at) VALUES ('u1', 'o@example.com', 'O', 'owner', 'active', 'h', ?)").run(t);
-    db.prepare("INSERT INTO auth_sessions (id_hash, id, user_id, method, created_at, last_seen_at, expires_at) VALUES ('h1', 's1', 'u1', 'password', ?, ?, ?)").run(t, t, t);
+    db.prepare(
+      "INSERT INTO auth_users (id, email, name, role, status, password_hash, created_at) VALUES ('u1', 'o@example.com', 'O', 'owner', 'active', 'h', ?)",
+    ).run(t);
+    db.prepare(
+      "INSERT INTO auth_sessions (id_hash, id, user_id, method, created_at, last_seen_at, expires_at) VALUES ('h1', 's1', 'u1', 'password', ?, ?, ?)",
+    ).run(t, t, t);
     db.prepare("INSERT INTO auth_identities (provider, subject, user_id, created_at) VALUES ('corp', 'sub', 'u1', ?)").run(t);
     db.prepare("INSERT INTO auth_recovery_codes (user_id, code_hash) VALUES ('u1', 'c1')").run();
-    db.prepare("INSERT INTO auth_tokens (id, secret_hash, name, role, created_by, created_at, expires_at) VALUES ('t1', 'x', 'CI', 'admin', 'u1', ?, ?)").run(t, t);
-    db.prepare("INSERT INTO auth_providers (id, preset, name, issuer, client_id, scopes, default_role, created_at, updated_at) VALUES ('kc', 'keycloak', 'KC', 'https://kc', 'c', '[]', 'viewer', ?, ?)").run(t, t);
+    db.prepare("INSERT INTO auth_tokens (id, secret_hash, name, role, created_by, created_at, expires_at) VALUES ('t1', 'x', 'CI', 'admin', 'u1', ?, ?)").run(
+      t,
+      t,
+    );
+    db.prepare(
+      "INSERT INTO auth_providers (id, preset, name, issuer, client_id, scopes, default_role, created_at, updated_at) VALUES ('kc', 'keycloak', 'KC', 'https://kc', 'c', '[]', 'viewer', ?, ?)",
+    ).run(t, t);
     migrate(db);
     const count = (table: string) => (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
     expect(["auth_users", "auth_sessions", "auth_identities", "auth_recovery_codes", "auth_tokens", "auth_providers"].map(count)).toEqual([1, 1, 1, 1, 1, 1]);
@@ -728,11 +789,18 @@ describe("passwords another directory keeps", () => {
     // The password set with the invitation no longer works: Active Directory decides.
     expect((await app.browser().json("/api/v1/auth/login", { body: { email: "dee@example.com", password: PASSWORD } })).status).toBe(401);
     const b = app.browser();
-    expect((await b.json<{ status: string }>("/api/v1/auth/login", { body: { email: "dee@example.com", password: "the AD password" } })).body.status).toBe("signed-in");
+    expect((await b.json<{ status: string }>("/api/v1/auth/login", { body: { email: "dee@example.com", password: "the AD password" } })).body.status).toBe(
+      "signed-in",
+    );
 
-    expect((await b.json<{ detail: string }>("/api/v1/auth/me/password", { body: { currentPassword: "x", newPassword: "a brand new password" } })).body.detail).toMatch(/kept in Active Directory/);
+    expect(
+      (await b.json<{ detail: string }>("/api/v1/auth/me/password", { body: { currentPassword: "x", newPassword: "a brand new password" } })).body.detail,
+    ).toMatch(/kept in Active Directory/);
     expect((await owner.json(`/api/v1/auth/members/${id}/reset`, { body: {} })).status).toBe(409);
-    expect((await owner.json<{ link: string | null }>(`/api/v1/auth/members/${id}/reset`, { body: { mfa: true } })).body).toEqual({ link: null, linkExpiresAt: null });
+    expect((await owner.json<{ link: string | null }>(`/api/v1/auth/members/${id}/reset`, { body: { mfa: true } })).body).toEqual({
+      link: null,
+      linkExpiresAt: null,
+    });
   });
 });
 
@@ -740,7 +808,12 @@ describe("environment", () => {
   it("reads one OIDC provider with role mapping", async () => {
     const { oidcFromEnv } = await import("../src/env.ts");
     expect(oidcFromEnv({})).toEqual([]);
-    const [p] = oidcFromEnv({ OPENASY_OIDC_ISSUER: "https://login.example.com", OPENASY_OIDC_CLIENT_ID: "vulns", OPENASY_OIDC_ROLE_MAPPING: "sec=admin, staff=viewer", OPENASY_OIDC_ALLOWED_DOMAINS: "Example.com" });
+    const [p] = oidcFromEnv({
+      OPENASY_OIDC_ISSUER: "https://login.example.com",
+      OPENASY_OIDC_CLIENT_ID: "vulns",
+      OPENASY_OIDC_ROLE_MAPPING: "sec=admin, staff=viewer",
+      OPENASY_OIDC_ALLOWED_DOMAINS: "Example.com",
+    });
     expect(p).toMatchObject({ id: "sso", name: "SSO", roleMapping: { sec: "admin", staff: "viewer" }, allowedDomains: ["example.com"] });
     expect(() => oidcFromEnv({ OPENASY_OIDC_ISSUER: "https://x" })).toThrow(/OPENASY_OIDC_CLIENT_ID/);
     expect(() => oidcFromEnv({ OPENASY_OIDC_ISSUER: "https://x", OPENASY_OIDC_CLIENT_ID: "c", OPENASY_OIDC_DEFAULT_ROLE: "god" })).toThrow(/not owner/);
@@ -749,8 +822,14 @@ describe("environment", () => {
   it("takes a provider's defaults from OIDC_PROVIDER, and the variables still win", async () => {
     const { oidcFromEnv } = await import("../src/env.ts");
     const base = { OPENASY_OIDC_ISSUER: "https://okta.example.com", OPENASY_OIDC_CLIENT_ID: "vpn" };
-    expect(oidcFromEnv({ ...base, OPENASY_OIDC_PROVIDER: "okta" })[0]).toMatchObject({ name: "Okta", scopes: ["openid", "email", "profile", "groups"], groupsClaim: "groups" });
-    expect(oidcFromEnv({ ...base, OPENASY_OIDC_PROVIDER: "keycloak", OPENASY_OIDC_NAME: "Ops", OPENASY_OIDC_GROUPS_CLAIM: "realm_access.roles" })[0]).toMatchObject({ name: "Ops", groupsClaim: "realm_access.roles" });
+    expect(oidcFromEnv({ ...base, OPENASY_OIDC_PROVIDER: "okta" })[0]).toMatchObject({
+      name: "Okta",
+      scopes: ["openid", "email", "profile", "groups"],
+      groupsClaim: "groups",
+    });
+    expect(
+      oidcFromEnv({ ...base, OPENASY_OIDC_PROVIDER: "keycloak", OPENASY_OIDC_NAME: "Ops", OPENASY_OIDC_GROUPS_CLAIM: "realm_access.roles" })[0],
+    ).toMatchObject({ name: "Ops", groupsClaim: "realm_access.roles" });
     expect(() => oidcFromEnv({ ...base, OPENASY_OIDC_PROVIDER: "myspace" })).toThrow(/is not one of keycloak, entra/);
   });
 
@@ -760,11 +839,21 @@ describe("environment", () => {
     const listen = (w: Error) => warnings.push(w.message);
     process.on("warning", listen);
     try {
-      const [p] = oidcFromEnv({ VPN_OIDC_ISSUER: "https://old.example.com", VPN_OIDC_CLIENT_ID: "vpn", OPENASY_OIDC_ISSUER: "https://id.example.com", VPN_OIDC_ROLE_MAPPING: "ops=admin" }, "VPN_");
+      const [p] = oidcFromEnv(
+        {
+          VPN_OIDC_ISSUER: "https://old.example.com",
+          VPN_OIDC_CLIENT_ID: "vpn",
+          OPENASY_OIDC_ISSUER: "https://id.example.com",
+          VPN_OIDC_ROLE_MAPPING: "ops=admin",
+        },
+        "VPN_",
+      );
       expect(p).toMatchObject({ issuer: "https://id.example.com", clientId: "vpn", roleMapping: { ops: "admin" } });
       expect(oidcFromEnv({ VPN_OIDC_ISSUER: "https://old.example.com", VPN_OIDC_CLIENT_ID: "vpn" })).toEqual([]);
       await new Promise((r) => setImmediate(r));
-      expect(warnings).toEqual(["Rename these variables, the old names go in a later release: VPN_OIDC_CLIENT_ID -> OPENASY_OIDC_CLIENT_ID, VPN_OIDC_ROLE_MAPPING -> OPENASY_OIDC_ROLE_MAPPING"]);
+      expect(warnings).toEqual([
+        "Rename these variables, the old names go in a later release: VPN_OIDC_CLIENT_ID -> OPENASY_OIDC_CLIENT_ID, VPN_OIDC_ROLE_MAPPING -> OPENASY_OIDC_ROLE_MAPPING",
+      ]);
     } finally {
       process.off("warning", listen);
     }
@@ -780,11 +869,20 @@ describe("environment", () => {
     expect(oidcFromEnv({ OPENASY_OIDC_AUTO_REDIRECT: "true" })).toEqual([]);
 
     await app.close();
-    app = await startProduct({ secretsKey: randomBytes(32), oidc: [{ id: "sso", name: "Identity", issuer: "https://id.example.com", clientId: "c", autoRedirect: true }] });
+    app = await startProduct({
+      secretsKey: randomBytes(32),
+      oidc: [{ id: "sso", name: "Identity", issuer: "https://id.example.com", clientId: "c", autoRedirect: true }],
+    });
     const owner = await createOwner(app);
     await addTotp(app, owner);
     expect((await app.browser().json("/api/v1/auth/methods")).body).toMatchObject({ autoRedirect: "sso" });
-    expect((await owner.json("/api/v1/auth/providers", { body: { preset: "keycloak", id: "kc", issuer: "https://kc.example.com", clientId: "c", autoRedirect: true } })).status).toBe(409);
+    expect(
+      (
+        await owner.json("/api/v1/auth/providers", {
+          body: { preset: "keycloak", id: "kc", issuer: "https://kc.example.com", clientId: "c", autoRedirect: true },
+        })
+      ).status,
+    ).toBe(409);
   });
 
   it("has setup steps with the redirect address for every preset", async () => {
@@ -804,7 +902,11 @@ describe("environment", () => {
     const { tmpdir } = await import("node:os");
     const dir = mkdtempSync(join(tmpdir(), "auth-key-"));
     const key = randomBytes(32);
-    for (const [name, content] of [["hex", key.toString("hex") + "\n"], ["b64", key.toString("base64")], ["raw", key]] as const) {
+    for (const [name, content] of [
+      ["hex", key.toString("hex") + "\n"],
+      ["b64", key.toString("base64")],
+      ["raw", key],
+    ] as const) {
       writeFileSync(join(dir, name), content);
       expect(readSecretsKey(join(dir, name))).toEqual(key);
     }
@@ -818,7 +920,9 @@ describe("device binding", () => {
   it("keeps the session across a browser update but ends it on another device", async () => {
     const b = await createOwner(app);
     await addTotp(app, b);
-    const ua = (v: string, os = "Macintosh; Intel Mac OS X 10_15_7") => ({ "user-agent": `Mozilla/5.0 (${os}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${v} Safari/537.36` });
+    const ua = (v: string, os = "Macintosh; Intel Mac OS X 10_15_7") => ({
+      "user-agent": `Mozilla/5.0 (${os}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${v} Safari/537.36`,
+    });
     // The session was opened without a User-Agent by the test client; sign in again with one.
     await b.json("/api/v1/auth/logout", { body: {} });
     await b.json("/api/v1/auth/login", { body: { email: "owner@example.com", password: PASSWORD }, headers: ua("130.0.0.0") });

@@ -136,20 +136,32 @@ export class SoftPasskey {
   }
 
   register(options: { challenge: string; rp: { id: string } }) {
-    const attestationObject = encodeCBOR(new Map<string, unknown>([["fmt", "none"], ["attStmt", new Map()], ["authData", this.authData(options.rp.id, true)]]) as never);
+    const attestationObject = encodeCBOR(
+      new Map<string, unknown>([
+        ["fmt", "none"],
+        ["attStmt", new Map()],
+        ["authData", this.authData(options.rp.id, true)],
+      ]) as never,
+    );
     return {
       id: b64u(this.id),
       rawId: b64u(this.id),
       type: "public-key",
       clientExtensionResults: {},
-      response: { clientDataJSON: b64u(this.clientData("webauthn.create", options.challenge)), attestationObject: b64u(attestationObject), transports: ["internal"] },
+      response: {
+        clientDataJSON: b64u(this.clientData("webauthn.create", options.challenge)),
+        attestationObject: b64u(attestationObject),
+        transports: ["internal"],
+      },
     };
   }
 
   authenticate(options: { challenge: string; rpId: string }) {
     const authData = this.authData(options.rpId, false);
     const clientDataJSON = this.clientData("webauthn.get", options.challenge);
-    const signature = createSign("sha256").update(Buffer.concat([authData, createHash("sha256").update(clientDataJSON).digest()])).sign(this.keys.privateKey);
+    const signature = createSign("sha256")
+      .update(Buffer.concat([authData, createHash("sha256").update(clientDataJSON).digest()]))
+      .sign(this.keys.privateKey);
     return {
       id: b64u(this.id),
       rawId: b64u(this.id),

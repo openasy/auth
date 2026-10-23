@@ -41,7 +41,9 @@ let idp: Awaited<ReturnType<typeof startIdp>>;
 
 beforeAll(async () => {
   idp = await startIdp();
-  app = await startProduct({ oidc: [{ id: "corp", name: "Corp", issuer: idp.issuer, clientId: "c", clientSecret: "s", allowInsecure: true, defaultRole: "viewer" }] });
+  app = await startProduct({
+    oidc: [{ id: "corp", name: "Corp", issuer: idp.issuer, clientId: "c", clientSecret: "s", allowInsecure: true, defaultRole: "viewer" }],
+  });
 });
 afterAll(async () => {
   await app.close();
@@ -58,7 +60,9 @@ describe("/api/v1/auth matches its OpenAPI description", () => {
 
     const token = new URL(app.auth.setupLink()!).searchParams.get("setup");
     const owner = app.browser();
-    expect((await check(owner, "POST", "/api/v1/auth/setup", undefined, { token, name: "Olivia", email: "owner@example.com", password: PASSWORD })).status).toBe(200);
+    expect(
+      (await check(owner, "POST", "/api/v1/auth/setup", undefined, { token, name: "Olivia", email: "owner@example.com", password: PASSWORD })).status,
+    ).toBe(200);
     const { secret } = (await check(owner, "POST", "/api/v1/auth/me/totp")).body as { secret: string };
     await check(owner, "POST", "/api/v1/auth/me/totp/confirm", undefined, { code: "000000" });
     expect((await check(owner, "POST", "/api/v1/auth/me/totp/confirm", undefined, { code: codeAt(secret, app.clock.t) })).status).toBe(200);
@@ -66,7 +70,9 @@ describe("/api/v1/auth matches its OpenAPI description", () => {
     await check(owner, "POST", "/api/v1/auth/me/recovery-codes");
 
     const b = app.browser();
-    expect((await check(b, "POST", "/api/v1/auth/login", undefined, { email: "owner@example.com", password: PASSWORD })).body).toMatchObject({ status: "mfa-required" });
+    expect((await check(b, "POST", "/api/v1/auth/login", undefined, { email: "owner@example.com", password: PASSWORD })).body).toMatchObject({
+      status: "mfa-required",
+    });
     await check(b, "POST", "/api/v1/auth/login/mfa", undefined, { code: "000000" });
     expect((await check(b, "POST", "/api/v1/auth/login/mfa", undefined, { code: codeAt(secret, app.clock.t) })).status).toBe(200);
     await check(b, "POST", "/api/v1/auth/logout");
@@ -104,7 +110,10 @@ describe("/api/v1/auth matches its OpenAPI description", () => {
     const fresh = await startProduct();
     const o = await createOwner(fresh);
     await addTotp(fresh, o);
-    const invited = (await check(o, "POST", "/api/v1/auth/members", undefined, { email: "ed@example.com", role: "editor" })).body as { member: { id: string }; link: string };
+    const invited = (await check(o, "POST", "/api/v1/auth/members", undefined, { email: "ed@example.com", role: "editor" })).body as {
+      member: { id: string };
+      link: string;
+    };
     await check(o, "POST", "/api/v1/auth/members", undefined, { email: "ed@example.com", role: "editor" });
     await check(o, "GET", "/api/v1/auth/members");
     const token = new URL(invited.link).searchParams.get("link")!;
@@ -121,7 +130,10 @@ describe("/api/v1/auth matches its OpenAPI description", () => {
     await check(o, "POST", "/api/v1/auth/members/{id}/reset", `/api/v1/auth/members/${id}/reset`, { mfa: true });
     await check(o, "POST", "/api/v1/auth/members/{id}/reset", "/api/v1/auth/members/none/reset", {});
 
-    const created = (await check(o, "POST", "/api/v1/auth/tokens", undefined, { name: "CI", role: "editor", expiresInDays: 30 })).body as { id: string; token: string };
+    const created = (await check(o, "POST", "/api/v1/auth/tokens", undefined, { name: "CI", role: "editor", expiresInDays: 30 })).body as {
+      id: string;
+      token: string;
+    };
     await check(o, "POST", "/api/v1/auth/tokens", undefined, { name: "CI", role: "owner" });
     await check(o, "GET", "/api/v1/auth/tokens");
     const viaToken = fresh.browser();

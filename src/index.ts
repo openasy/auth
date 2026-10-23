@@ -166,7 +166,14 @@ const PREFIX = "/api/v1/auth";
  * What a session is bound to: the browser and operating system from the User-Agent, without version numbers, so a
  * browser update keeps the session but a cookie copied into another browser or machine type does not work there.
  */
-const deviceOf = (req: IncomingMessage) => sha256((req.headers["user-agent"] ?? "").toLowerCase().replace(/[\d._]+/g, "").replace(/\s+/g, " ").trim());
+const deviceOf = (req: IncomingMessage) =>
+  sha256(
+    (req.headers["user-agent"] ?? "")
+      .toLowerCase()
+      .replace(/[\d._]+/g, "")
+      .replace(/\s+/g, " ")
+      .trim(),
+  );
 const MIN_PASSWORD = 12;
 const SAFE = new Set(["GET", "HEAD", "OPTIONS"]);
 
@@ -189,7 +196,8 @@ export function createAuth(opts: AuthOptions) {
   const envProviders = opts.oidc ?? [];
   envProviders.forEach(validateProvider);
   for (const p of envProviders) {
-    if (![...Object.values(p.roleMapping ?? {}), p.defaultRole ?? "viewer"].every(roleAllowed)) throw new Error(`OIDC provider "${p.id}": the user role needs users: true`);
+    if (![...Object.values(p.roleMapping ?? {}), p.defaultRole ?? "viewer"].every(roleAllowed))
+      throw new Error(`OIDC provider "${p.id}": the user role needs users: true`);
   }
   if (new Set(envProviders.map((p) => p.id)).size !== envProviders.length) throw new Error("OIDC provider ids must be unique");
   const now = opts.now ?? Date.now;
@@ -259,15 +267,20 @@ export function createAuth(opts: AuthOptions) {
 
   function createChallenge(kind: string, userId: string | null, data: Record<string, unknown>, ttlMs: number): string {
     const token = randomToken();
-    db.prepare("INSERT INTO auth_challenges (id_hash, kind, user_id, data, expires_at) VALUES (?, ?, ?, ?, ?)").run(sha256(token), kind, userId, JSON.stringify(data), iso(now() + ttlMs));
+    db.prepare("INSERT INTO auth_challenges (id_hash, kind, user_id, data, expires_at) VALUES (?, ?, ?, ?, ?)").run(
+      sha256(token),
+      kind,
+      userId,
+      JSON.stringify(data),
+      iso(now() + ttlMs),
+    );
     return token;
   }
 
   function readChallenge(token: string | undefined, kind: string) {
     if (!token) return undefined;
     const row = db.prepare("SELECT * FROM auth_challenges WHERE id_hash = ? AND kind = ?").get(sha256(token), kind) as
-      | { id_hash: string; user_id: string | null; data: string; expires_at: string }
-      | undefined;
+      { id_hash: string; user_id: string | null; data: string; expires_at: string } | undefined;
     if (!row) return undefined;
     if (row.expires_at <= iso()) {
       db.prepare("DELETE FROM auth_challenges WHERE id_hash = ?").run(row.id_hash);
@@ -277,7 +290,8 @@ export function createAuth(opts: AuthOptions) {
   }
 
   const dropChallenge = (idHash: string) => db.prepare("DELETE FROM auth_challenges WHERE id_hash = ?").run(idHash);
-  const updateChallenge = (idHash: string, data: Record<string, unknown>) => db.prepare("UPDATE auth_challenges SET data = ? WHERE id_hash = ?").run(JSON.stringify(data), idHash);
+  const updateChallenge = (idHash: string, data: Record<string, unknown>) =>
+    db.prepare("UPDATE auth_challenges SET data = ? WHERE id_hash = ?").run(JSON.stringify(data), idHash);
   const revokeSessions = (userId: string, exceptId?: string) =>
     db.prepare("DELETE FROM auth_sessions WHERE user_id = ? AND id != ?").run(userId, exceptId ?? "");
 
@@ -307,13 +321,34 @@ export function createAuth(opts: AuthOptions) {
     const t = now();
     db.prepare(
       "INSERT INTO auth_sessions (id_hash, id, user_id, method, mfa, factor, ip, user_agent, device, created_at, last_seen_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    ).run(sha256(token), randomUUID(), user.id, method, mfa ? 1 : 0, factor, clientIp(req), (req.headers["user-agent"] ?? "").slice(0, 256), deviceOf(req), iso(t), iso(t), iso(t + absoluteMs));
+    ).run(
+      sha256(token),
+      randomUUID(),
+      user.id,
+      method,
+      mfa ? 1 : 0,
+      factor,
+      clientIp(req),
+      (req.headers["user-agent"] ?? "").slice(0, 256),
+      deviceOf(req),
+      iso(t),
+      iso(t),
+      iso(t + absoluteMs),
+    );
     db.prepare("UPDATE auth_users SET last_sign_in_at = ? WHERE id = ?").run(iso(t), user.id);
     emit({ type: "sign-in", actor: user.id, method, ip: clientIp(req) });
     return setCookie(C.session, token, Math.floor(absoluteMs / 1000));
   }
 
-  function signedIn(res: ServerResponse, req: IncomingMessage, user: UserRow, method: string, mfa: boolean, extra: string[] = [], factor: Factor | null = null) {
+  function signedIn(
+    res: ServerResponse,
+    req: IncomingMessage,
+    user: UserRow,
+    method: string,
+    mfa: boolean,
+    extra: string[] = [],
+    factor: Factor | null = null,
+  ) {
     const set = startSession(req, user, method, mfa, factor);
     sendJson(res, 200, { status: "signed-in", user: toUser(user), mfaSetupRequired: mfaSetupRequired(user, method) }, { "set-cookie": [set, ...extra] });
   }
@@ -335,7 +370,18 @@ export function createAuth(opts: AuthOptions) {
       .prepare(
         "SELECT s.id AS session_id, s.id_hash, s.method, s.mfa, s.factor, s.device, s.last_seen_at, s.expires_at, u.* FROM auth_sessions s JOIN auth_users u ON u.id = s.user_id WHERE s.id_hash = ?",
       )
-      .get(sha256(token)) as (UserRow & { session_id: string; id_hash: string; method: string; mfa: number; factor: Factor | null; device: string; last_seen_at: string; expires_at: string }) | undefined;
+      .get(sha256(token)) as
+      | (UserRow & {
+          session_id: string;
+          id_hash: string;
+          method: string;
+          mfa: number;
+          factor: Factor | null;
+          device: string;
+          last_seen_at: string;
+          expires_at: string;
+        })
+      | undefined;
     if (!row) return undefined;
     if (row.device && row.device !== deviceOf(req)) {
       // The cookie is being used from another browser or system than the one that signed in: end the session.
@@ -362,10 +408,10 @@ export function createAuth(opts: AuthOptions) {
 
   function tokenPrincipal(secret: string): Principal {
     const row = db.prepare("SELECT * FROM auth_tokens WHERE secret_hash = ?").get(sha256(secret)) as
-      | { id: string; name: string; role: Role; expires_at: string; last_used_at: string | null }
-      | undefined;
+      { id: string; name: string; role: Role; expires_at: string; last_used_at: string | null } | undefined;
     if (!row || row.expires_at <= iso()) throw new AuthError(401, "invalid-token", "The API token is unknown or expired.");
-    if (!row.last_used_at || now() - Date.parse(row.last_used_at) > 60_000) db.prepare("UPDATE auth_tokens SET last_used_at = ? WHERE id = ?").run(iso(), row.id);
+    if (!row.last_used_at || now() - Date.parse(row.last_used_at) > 60_000)
+      db.prepare("UPDATE auth_tokens SET last_used_at = ? WHERE id = ?").run(iso(), row.id);
     return { kind: "token", tokenId: row.id, name: row.name, role: row.role };
   }
 
@@ -406,7 +452,8 @@ export function createAuth(opts: AuthOptions) {
   // ---- Second factors -------------------------------------------------------------------------------------------
 
   function checkTotp(userId: string, code: string): boolean {
-    const row = db.prepare("SELECT secret, last_step FROM auth_totp WHERE user_id = ? AND confirmed = 1").get(userId) as { secret: string; last_step: number } | undefined;
+    const row = db.prepare("SELECT secret, last_step FROM auth_totp WHERE user_id = ? AND confirmed = 1").get(userId) as
+      { secret: string; last_step: number } | undefined;
     if (!row) return false;
     const step = matchTotp(fromBase32(secrets.open(row.secret)), code, now());
     if (step === null || step <= row.last_step) return false;
@@ -414,8 +461,10 @@ export function createAuth(opts: AuthOptions) {
     return true;
   }
 
-  function useRecoveryCode(userId: string, code: string): boolean {
-    const r = db.prepare("UPDATE auth_recovery_codes SET used_at = ? WHERE user_id = ? AND code_hash = ? AND used_at IS NULL").run(iso(), userId, sha256(normalizeRecoveryCode(code)));
+  function redeemRecoveryCode(userId: string, code: string): boolean {
+    const r = db
+      .prepare("UPDATE auth_recovery_codes SET used_at = ? WHERE user_id = ? AND code_hash = ? AND used_at IS NULL")
+      .run(iso(), userId, sha256(normalizeRecoveryCode(code)));
     return r.changes === 1;
   }
 
@@ -460,9 +509,13 @@ export function createAuth(opts: AuthOptions) {
       throw refuse(`Your ${p.name} account is not in an allowed domain.`);
     }
     // Without the groups, the mapping would give the wrong role: refuse and say how to fix it at the provider.
-    if (p.roleMapping && c.groupsOverage) throw refuse(`${p.name} left your groups out of the token because there are too many. An admin can send only the groups assigned to ${productName}'s registration.`);
+    if (p.roleMapping && c.groupsOverage)
+      throw refuse(
+        `${p.name} left your groups out of the token because there are too many. An admin can send only the groups assigned to ${productName}'s registration.`,
+      );
     const mapped = p.roleMapping ? highest(c.groups.map((g) => p.roleMapping![g]).filter(roleAllowed)) : undefined;
-    const identity = db.prepare("SELECT user_id FROM auth_identities WHERE provider = ? AND subject = ?").get(p.id, c.subject) as { user_id: string } | undefined;
+    const identity = db.prepare("SELECT user_id FROM auth_identities WHERE provider = ? AND subject = ?").get(p.id, c.subject) as
+      { user_id: string } | undefined;
     let user = identity ? userRow(identity.user_id) : undefined;
     // An existing person is linked only by an email the provider says it has verified.
     if (!user && c.email && c.emailVerified) user = userByEmail(c.email);
@@ -510,17 +563,32 @@ export function createAuth(opts: AuthOptions) {
   });
 
   /** Every provider people can sign in with now: the environment's first, then the enabled ones from Settings. */
-  const providers = (): OidcProvider[] => [...envProviders, ...providerRows().filter((r) => r.enabled).map(fromRow)];
+  const providers = (): OidcProvider[] => [
+    ...envProviders,
+    ...providerRows()
+      .filter((r) => r.enabled)
+      .map(fromRow),
+  ];
 
   /** The first person, through a provider and the one-time setup link: they become the owner (ADR 0013). */
   function oidcOwner(p: OidcProvider, c: OidcClaims, setupHash: string, ip: string): UserRow {
-    const setup = db.prepare("SELECT expires_at FROM auth_challenges WHERE id_hash = ? AND kind = 'setup'").get(setupHash) as { expires_at: string } | undefined;
-    if (!setup || setup.expires_at <= iso() || userCount() > 0) throw new AuthError(403, "invalid-token", "This setup link is used or expired. Restart the product for a new one.");
+    const setup = db.prepare("SELECT expires_at FROM auth_challenges WHERE id_hash = ? AND kind = 'setup'").get(setupHash) as
+      { expires_at: string } | undefined;
+    if (!setup || setup.expires_at <= iso() || userCount() > 0)
+      throw new AuthError(403, "invalid-token", "This setup link is used or expired. Restart the product for a new one.");
     if (!c.email) throw new AuthError(403, "forbidden", `${p.name} did not say your email address. Allow the email scope for ${productName}.`);
-    if (p.allowedDomains && !(c.emailVerified && p.allowedDomains.includes(c.email.split("@")[1]!))) throw new AuthError(403, "forbidden", `Your ${p.name} account is not in an allowed domain.`);
+    if (p.allowedDomains && !(c.emailVerified && p.allowedDomains.includes(c.email.split("@")[1]!)))
+      throw new AuthError(403, "forbidden", `Your ${p.name} account is not in an allowed domain.`);
     const user = insertUser({ email: c.email, name: c.name ?? c.email, role: "owner", status: "active" });
     dropChallenge(setupHash);
-    db.prepare("INSERT INTO auth_identities (provider, subject, user_id, email, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?)").run(p.id, c.subject, user.id, c.email, iso(), iso());
+    db.prepare("INSERT INTO auth_identities (provider, subject, user_id, email, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?)").run(
+      p.id,
+      c.subject,
+      user.id,
+      c.email,
+      iso(),
+      iso(),
+    );
     emit({ type: "setup", actor: user.id, method: `oidc:${p.id}`, ip });
     return user;
   }
@@ -670,7 +738,14 @@ export function createAuth(opts: AuthOptions) {
       handle: () => {
         const all = providers();
         const auto = all.filter((p) => p.autoRedirect);
-        return { passwords, passkeys: true, users, providers: all.map((p) => ({ id: p.id, name: p.name })), autoRedirect: auto.length === 1 ? auto[0]!.id : null, setupRequired: userCount() === 0 };
+        return {
+          passwords,
+          passkeys: true,
+          users,
+          providers: all.map((p) => ({ id: p.id, name: p.name })),
+          autoRedirect: auto.length === 1 ? auto[0]!.id : null,
+          setupRequired: userCount() === 0,
+        };
       },
     },
 
@@ -684,8 +759,15 @@ export function createAuth(opts: AuthOptions) {
         const ch = readChallenge(str(b, "token", { max: 128 }), "setup");
         if (!ch || userCount() > 0) throw new AuthError(403, "invalid-token", "This setup link is used or expired. Restart the product for a new one.");
         // With password sign-in off, the owner signs in through a provider: a password nobody can use is no owner.
-        if (!passwords && providers().length) throw new AuthError(409, "conflict", `Password sign-in is off: continue with ${providers()[0]!.name} to become the owner.`);
-        const user = insertUser({ email: readEmail(b), name: str(b, "name", { max: 128 }).trim(), role: "owner", status: "active", passwordHash: await hashPassword(newPassword(b)) });
+        if (!passwords && providers().length)
+          throw new AuthError(409, "conflict", `Password sign-in is off: continue with ${providers()[0]!.name} to become the owner.`);
+        const user = insertUser({
+          email: readEmail(b),
+          name: str(b, "name", { max: 128 }).trim(),
+          role: "owner",
+          status: "active",
+          passwordHash: await hashPassword(newPassword(b)),
+        });
         dropChallenge(ch.idHash);
         emit({ type: "setup", actor: user.id, ip: clientIp(req) });
         signedIn(res, req, user, "password", false);
@@ -702,7 +784,10 @@ export function createAuth(opts: AuthOptions) {
         const email = readEmail(b);
         const password = str(b, "password", { max: 256 });
         const ip = clientIp(req);
-        throttle([[`ip:${ip}`, 50], [`ip:${ip}:${email}`, 10]]);
+        throttle([
+          [`ip:${ip}`, 50],
+          [`ip:${ip}:${email}`, 10],
+        ]);
         const user = userByEmail(email);
         // A password another directory keeps is checked there; the local hash is still computed, so the answer takes
         // as long either way.
@@ -711,7 +796,13 @@ export function createAuth(opts: AuthOptions) {
         const valid = external ? await opts.externalPasswords!.verify(user!.id, password).catch(() => false) : localValid && !!user?.password_hash;
         if (!user || !valid || user.status !== "active") {
           fail([`ip:${ip}`, `ip:${ip}:${email}`]);
-          emit({ type: "sign-in-failed", actor: user?.id, method: "password", ip, detail: user && valid ? `account ${user.status}` : "wrong email or password" });
+          emit({
+            type: "sign-in-failed",
+            actor: user?.id,
+            method: "password",
+            ip,
+            detail: user && valid ? `account ${user.status}` : "wrong email or password",
+          });
           throw new AuthError(401, "invalid-credentials", "Wrong email or password.");
         }
         if (hasMfa(user.id)) {
@@ -740,7 +831,7 @@ export function createAuth(opts: AuthOptions) {
         updateChallenge(ch.idHash, { attempts });
         const code = str(b, "code", { max: 32, optional: true });
         const recovery = str(b, "recoveryCode", { max: 32, optional: true });
-        const valid = code ? checkTotp(ch.userId, code) : recovery ? useRecoveryCode(ch.userId, recovery) : false;
+        const valid = code ? checkTotp(ch.userId, code) : recovery ? redeemRecoveryCode(ch.userId, recovery) : false;
         if (!valid) {
           emit({ type: "sign-in-failed", actor: ch.userId, method: code ? "totp" : "recovery-code", ip: clientIp(req), detail: "wrong code" });
           throw new AuthError(401, "invalid-credentials", "That code is not valid.");
@@ -759,7 +850,9 @@ export function createAuth(opts: AuthOptions) {
       handle: async ({ req, res }) => {
         checkOrigin(req);
         const mfa = readChallenge(parseCookies(req.headers.cookie)[C.mfa], "mfa");
-        const allow = mfa?.userId ? passkeys(mfa.userId).map((k) => ({ id: k.id, transports: JSON.parse(k.transports) as AuthenticatorTransport[] })) : undefined;
+        const allow = mfa?.userId
+          ? passkeys(mfa.userId).map((k) => ({ id: k.id, transports: JSON.parse(k.transports) as AuthenticatorTransport[] }))
+          : undefined;
         const options = await generateAuthenticationOptions({ rpID, allowCredentials: allow, userVerification: mfa ? "preferred" : "required" });
         const id = createChallenge("webauthn-login", mfa?.userId ?? null, { challenge: options.challenge, mfa: mfa?.idHash ?? null }, 5 * 60_000);
         ok(res, options, { "set-cookie": setCookie(C.webauthn, id, 300) });
@@ -776,8 +869,7 @@ export function createAuth(opts: AuthOptions) {
         const response = (await body()).response as AuthenticationResponseJSON | undefined;
         if (!response || typeof response.id !== "string") throw new AuthError(422, "invalid-body", "response must be the passkey's answer.");
         const key = db.prepare("SELECT * FROM auth_passkeys WHERE id = ?").get(response.id) as
-          | { id: string; user_id: string; public_key: Uint8Array; counter: number; transports: string }
-          | undefined;
+          { id: string; user_id: string; public_key: Uint8Array; counter: number; transports: string } | undefined;
         const ip = clientIp(req);
         const failed = () => {
           emit({ type: "sign-in-failed", actor: key?.user_id, method: "passkey", ip, detail: "passkey not accepted" });
@@ -789,7 +881,12 @@ export function createAuth(opts: AuthOptions) {
           expectedChallenge: String(ch.data.challenge),
           expectedOrigin: [...allowedOrigins],
           expectedRPID: rpID,
-          credential: { id: key.id, publicKey: new Uint8Array(key.public_key), counter: key.counter, transports: JSON.parse(key.transports) as AuthenticatorTransport[] },
+          credential: {
+            id: key.id,
+            publicKey: new Uint8Array(key.public_key),
+            counter: key.counter,
+            transports: JSON.parse(key.transports) as AuthenticatorTransport[],
+          },
           requireUserVerification: !ch.userId,
         }).catch(() => ({ verified: false as const, authenticationInfo: undefined }));
         if (!verification.verified || !verification.authenticationInfo) throw failed();
@@ -810,12 +907,20 @@ export function createAuth(opts: AuthOptions) {
         // ?setup=<token>: the first person becomes the owner through this provider, with the one-time setup link.
         const setupToken = url.searchParams.get("setup") ?? undefined;
         const setup = setupToken ? readChallenge(setupToken, "setup") : undefined;
-        if (setupToken && (!setup || userCount() > 0)) throw new AuthError(403, "invalid-token", "This setup link is used or expired. Restart the product for a new one.");
+        if (setupToken && (!setup || userCount() > 0))
+          throw new AuthError(403, "invalid-token", "This setup link is used or expired. Restart the product for a new one.");
         const s = await oidc.start(p);
         const id = createChallenge(
           "oidc",
           null,
-          { provider: p.id, verifier: s.verifier, state: s.state, nonce: s.nonce, return: safeReturn(url.searchParams.get("return")), setup: setup?.idHash ?? null },
+          {
+            provider: p.id,
+            verifier: s.verifier,
+            state: s.state,
+            nonce: s.nonce,
+            return: safeReturn(url.searchParams.get("return")),
+            setup: setup?.idHash ?? null,
+          },
           10 * 60_000,
         );
         res.writeHead(302, { location: s.url, "set-cookie": setCookie(C.oidc, id, 600), "cache-control": "no-store" }).end();
@@ -831,10 +936,16 @@ export function createAuth(opts: AuthOptions) {
         try {
           const p = provider(params[0]!);
           // The state cookie ties the answer to the browser that started; without it anyone could log you in as them.
-          if (!ch || ch.data.provider !== p.id) throw new AuthError(400, "invalid-body", "The sign-in took too long or was started in another browser. Try again.");
-          if (url.searchParams.get("error")) throw new AuthError(401, "invalid-credentials", `${p.name}: ${url.searchParams.get("error_description") ?? url.searchParams.get("error")}`);
+          if (!ch || ch.data.provider !== p.id)
+            throw new AuthError(400, "invalid-body", "The sign-in took too long or was started in another browser. Try again.");
+          if (url.searchParams.get("error"))
+            throw new AuthError(401, "invalid-credentials", `${p.name}: ${url.searchParams.get("error_description") ?? url.searchParams.get("error")}`);
           const claims = await oidc
-            .finish(p, new URL(`${origin}${url.pathname}${url.search}`), { verifier: String(ch.data.verifier), state: String(ch.data.state), nonce: String(ch.data.nonce) })
+            .finish(p, new URL(`${origin}${url.pathname}${url.search}`), {
+              verifier: String(ch.data.verifier),
+              state: String(ch.data.state),
+              nonce: String(ch.data.nonce),
+            })
             .catch((err: Error) => {
               throw new AuthError(401, "invalid-credentials", `${p.name} sign-in could not be verified: ${err.message}`);
             });
@@ -908,7 +1019,8 @@ export function createAuth(opts: AuthOptions) {
           mfaSetupRequired: mfaSetupRequired(row, p.method),
           hasPassword: !!row.password_hash,
           passkeys: passkeys(p.user.id).map((k) => ({ id: k.id, name: k.name, createdAt: k.created_at, lastUsedAt: k.last_used_at })),
-          recoveryCodesLeft: (db.prepare("SELECT COUNT(*) AS n FROM auth_recovery_codes WHERE user_id = ? AND used_at IS NULL").get(p.user.id) as { n: number }).n,
+          recoveryCodesLeft: (db.prepare("SELECT COUNT(*) AS n FROM auth_recovery_codes WHERE user_id = ? AND used_at IS NULL").get(p.user.id) as { n: number })
+            .n,
         };
       },
     },
@@ -945,10 +1057,20 @@ export function createAuth(opts: AuthOptions) {
       handle: ({ req }) => {
         const p = sessionPrincipal(req, "user", { allowMfaSetup: true });
         const rows = db
-          .prepare("SELECT id, method, ip, user_agent, created_at, last_seen_at FROM auth_sessions WHERE user_id = ? AND expires_at > ? ORDER BY last_seen_at DESC")
+          .prepare(
+            "SELECT id, method, ip, user_agent, created_at, last_seen_at FROM auth_sessions WHERE user_id = ? AND expires_at > ? ORDER BY last_seen_at DESC",
+          )
           .all(p.user.id, iso()) as Array<{ id: string; method: string; ip: string; user_agent: string; created_at: string; last_seen_at: string }>;
         return {
-          sessions: rows.map((r) => ({ id: r.id, method: r.method, ip: r.ip, userAgent: r.user_agent, createdAt: r.created_at, lastSeenAt: r.last_seen_at, current: r.id === p.sessionId })),
+          sessions: rows.map((r) => ({
+            id: r.id,
+            method: r.method,
+            ip: r.ip,
+            userAgent: r.user_agent,
+            createdAt: r.created_at,
+            lastSeenAt: r.last_seen_at,
+            current: r.id === p.sessionId,
+          })),
         };
       },
     },
@@ -971,11 +1093,9 @@ export function createAuth(opts: AuthOptions) {
         const p = sessionPrincipal(req, "user", { allowMfaSetup: true });
         if (hasTotp(p.user.id)) throw new AuthError(409, "conflict", "An authenticator app is already set up. Remove it first.");
         const secret = base32(randomBytes(20));
-        db.prepare("INSERT INTO auth_totp (user_id, secret, created_at) VALUES (?, ?, ?) ON CONFLICT (user_id) DO UPDATE SET secret = excluded.secret, created_at = excluded.created_at").run(
-          p.user.id,
-          secrets.seal(secret),
-          iso(),
-        );
+        db.prepare(
+          "INSERT INTO auth_totp (user_id, secret, created_at) VALUES (?, ?, ?) ON CONFLICT (user_id) DO UPDATE SET secret = excluded.secret, created_at = excluded.created_at",
+        ).run(p.user.id, secrets.seal(secret), iso());
         const label = encodeURIComponent(`${productName}:${p.user.email}`);
         return { secret, uri: `otpauth://totp/${label}?secret=${secret}&issuer=${encodeURIComponent(productName)}&algorithm=SHA1&digits=6&period=30` };
       },
@@ -999,7 +1119,8 @@ export function createAuth(opts: AuthOptions) {
       handle: ({ req, res }) => {
         const p = sessionPrincipal(req, "user", { allowMfaSetup: true });
         requireStrongSession(p);
-        if (db.prepare("DELETE FROM auth_totp WHERE user_id = ?").run(p.user.id).changes === 0) throw new AuthError(404, "not-found", "No authenticator app is set up.");
+        if (db.prepare("DELETE FROM auth_totp WHERE user_id = ?").run(p.user.id).changes === 0)
+          throw new AuthError(404, "not-found", "No authenticator app is set up.");
         factorRemoved(p.user.id);
         emit({ type: "mfa-removed", actor: p.user.id, method: "totp", ip: clientIp(req) });
         ok(res);
@@ -1076,7 +1197,8 @@ export function createAuth(opts: AuthOptions) {
       handle: ({ req, res, params }) => {
         const p = sessionPrincipal(req, "user", { allowMfaSetup: true });
         requireStrongSession(p);
-        if (db.prepare("DELETE FROM auth_passkeys WHERE id = ? AND user_id = ?").run(params[0]!, p.user.id).changes === 0) throw new AuthError(404, "not-found", "No such passkey.");
+        if (db.prepare("DELETE FROM auth_passkeys WHERE id = ? AND user_id = ?").run(params[0]!, p.user.id).changes === 0)
+          throw new AuthError(404, "not-found", "No such passkey.");
         factorRemoved(p.user.id);
         emit({ type: "mfa-removed", actor: p.user.id, method: "passkey", ip: clientIp(req) });
         ok(res);
@@ -1121,7 +1243,8 @@ export function createAuth(opts: AuthOptions) {
         if (b.role !== undefined) {
           const role = memberRole(b);
           mayManage(p.role, role);
-          if (target.role === "owner" && role !== "owner" && activeOwnersExcept(target.id) === 0) throw new AuthError(409, "conflict", "There must be at least one owner.");
+          if (target.role === "owner" && role !== "owner" && activeOwnersExcept(target.id) === 0)
+            throw new AuthError(409, "conflict", "There must be at least one owner.");
           db.prepare("UPDATE auth_users SET role = ? WHERE id = ?").run(role, target.id);
           changes.push(`role ${target.role} -> ${role}`);
         }
@@ -1183,7 +1306,13 @@ export function createAuth(opts: AuthOptions) {
         const kind = target.status === "invited" ? "invite" : "reset";
         db.prepare("DELETE FROM auth_challenges WHERE user_id = ? AND kind = ?").run(target.id, kind);
         const token = createChallenge(kind, target.id, { kind }, 86_400_000);
-        emit({ type: "member-updated", actor: p.user.id, target: target.id, ip: clientIp(req), detail: mfa ? "password link and second factors reset" : "password link" });
+        emit({
+          type: "member-updated",
+          actor: p.user.id,
+          target: target.id,
+          ip: clientIp(req),
+          detail: mfa ? "password link and second factors reset" : "password link",
+        });
         sendJson(res, 200, { link: links.password(token), linkExpiresAt: iso(now() + 86_400_000) });
       },
     },
@@ -1210,12 +1339,30 @@ export function createAuth(opts: AuthOptions) {
         const b = await body();
         const v = providerInput(b);
         const id = b.id === undefined ? v.preset : b.id;
-        if (typeof id !== "string" || !/^[a-z0-9-]{1,32}$/.test(id)) throw new AuthError(422, "invalid-body", "id must be lowercase letters, digits and dashes, up to 32.");
-        if (envProviders.some((e) => e.id === id) || providerRow(id)) throw new AuthError(409, "conflict", `A provider with the id ${id} exists. Choose another id.`);
+        if (typeof id !== "string" || !/^[a-z0-9-]{1,32}$/.test(id))
+          throw new AuthError(422, "invalid-body", "id must be lowercase letters, digits and dashes, up to 32.");
+        if (envProviders.some((e) => e.id === id) || providerRow(id))
+          throw new AuthError(409, "conflict", `A provider with the id ${id} exists. Choose another id.`);
         onlyAutoRedirect(id, v.autoRedirect);
         db.prepare(
           "INSERT INTO auth_providers (id, preset, name, issuer, client_id, client_secret, scopes, groups_claim, role_mapping, default_role, allowed_domains, enabled, auto_redirect, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        ).run(id, v.preset, v.name, v.issuer, v.clientId, v.clientSecret, JSON.stringify(v.scopes), v.groupsClaim, JSON.stringify(v.roleMapping), v.defaultRole, JSON.stringify(v.allowedDomains), v.enabled ? 1 : 0, v.autoRedirect ? 1 : 0, iso(), iso());
+        ).run(
+          id,
+          v.preset,
+          v.name,
+          v.issuer,
+          v.clientId,
+          v.clientSecret,
+          JSON.stringify(v.scopes),
+          v.groupsClaim,
+          JSON.stringify(v.roleMapping),
+          v.defaultRole,
+          JSON.stringify(v.allowedDomains),
+          v.enabled ? 1 : 0,
+          v.autoRedirect ? 1 : 0,
+          iso(),
+          iso(),
+        );
         // Sign-ins kept from an earlier provider with this id are not this one's.
         unlinkProvider(id);
         emit({ type: "provider-added", actor: p.user.id, target: id, ip: clientIp(req), detail: `${v.name} (${v.issuer})` });
@@ -1236,10 +1383,30 @@ export function createAuth(opts: AuthOptions) {
         onlyAutoRedirect(id, v.autoRedirect);
         db.prepare(
           "UPDATE auth_providers SET name = ?, issuer = ?, client_id = ?, client_secret = ?, scopes = ?, groups_claim = ?, role_mapping = ?, default_role = ?, allowed_domains = ?, enabled = ?, auto_redirect = ?, updated_at = ? WHERE id = ?",
-        ).run(v.name, v.issuer, v.clientId, v.clientSecret, JSON.stringify(v.scopes), v.groupsClaim, JSON.stringify(v.roleMapping), v.defaultRole, JSON.stringify(v.allowedDomains), v.enabled ? 1 : 0, v.autoRedirect ? 1 : 0, iso(), id);
+        ).run(
+          v.name,
+          v.issuer,
+          v.clientId,
+          v.clientSecret,
+          JSON.stringify(v.scopes),
+          v.groupsClaim,
+          JSON.stringify(v.roleMapping),
+          v.defaultRole,
+          JSON.stringify(v.allowedDomains),
+          v.enabled ? 1 : 0,
+          v.autoRedirect ? 1 : 0,
+          iso(),
+          id,
+        );
         if (v.issuer !== current.issuer) unlinkProvider(id);
         oidc.forget(id);
-        emit({ type: "provider-updated", actor: p.user.id, target: id, ip: clientIp(req), detail: v.issuer !== current.issuer ? `issuer ${current.issuer} -> ${v.issuer}` : undefined });
+        emit({
+          type: "provider-updated",
+          actor: p.user.id,
+          target: id,
+          ip: clientIp(req),
+          detail: v.issuer !== current.issuer ? `issuer ${current.issuer} -> ${v.issuer}` : undefined,
+        });
         const row = providerRow(id)!;
         return providerView(fromRow(row), row);
       },
@@ -1284,9 +1451,26 @@ export function createAuth(opts: AuthOptions) {
         authorize(req, "admin");
         const rows = db
           .prepare("SELECT t.*, u.email AS creator FROM auth_tokens t LEFT JOIN auth_users u ON u.id = t.created_by ORDER BY t.created_at DESC")
-          .all() as Array<{ id: string; name: string; role: Role; creator: string | null; created_at: string; expires_at: string; last_used_at: string | null }>;
+          .all() as Array<{
+          id: string;
+          name: string;
+          role: Role;
+          creator: string | null;
+          created_at: string;
+          expires_at: string;
+          last_used_at: string | null;
+        }>;
         return {
-          tokens: rows.map((r) => ({ id: r.id, name: r.name, role: r.role, createdBy: r.creator, createdAt: r.created_at, expiresAt: r.expires_at, lastUsedAt: r.last_used_at, expired: r.expires_at <= iso() })),
+          tokens: rows.map((r) => ({
+            id: r.id,
+            name: r.name,
+            role: r.role,
+            createdBy: r.creator,
+            createdAt: r.created_at,
+            expiresAt: r.expires_at,
+            lastUsedAt: r.last_used_at,
+            expired: r.expires_at <= iso(),
+          })),
         };
       },
     },
@@ -1301,11 +1485,20 @@ export function createAuth(opts: AuthOptions) {
         if (role !== "admin" && role !== "editor" && role !== "viewer") throw new AuthError(422, "invalid-body", "role must be admin, editor or viewer.");
         if (!atLeast(p.role, role)) throw new AuthError(403, "forbidden", "A token cannot have a higher role than yours.");
         const days = b.expiresInDays ?? 90;
-        if (typeof days !== "number" || !Number.isInteger(days) || days < 1 || days > 366) throw new AuthError(422, "invalid-body", "expiresInDays must be a whole number from 1 to 366.");
+        if (typeof days !== "number" || !Number.isInteger(days) || days < 1 || days > 366)
+          throw new AuthError(422, "invalid-body", "expiresInDays must be a whole number from 1 to 366.");
         const secret = `oa_${product}_${randomToken()}`;
         const id = randomUUID();
         const expiresAt = iso(now() + days * 86_400_000);
-        db.prepare("INSERT INTO auth_tokens (id, secret_hash, name, role, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(id, sha256(secret), name, role, p.user.id, iso(), expiresAt);
+        db.prepare("INSERT INTO auth_tokens (id, secret_hash, name, role, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
+          id,
+          sha256(secret),
+          name,
+          role,
+          p.user.id,
+          iso(),
+          expiresAt,
+        );
         emit({ type: "token-created", actor: p.user.id, target: id, ip: clientIp(req), detail: `${name} (${role}, ${days} days)` });
         sendJson(res, 201, { id, name, role, expiresAt, token: secret });
       },

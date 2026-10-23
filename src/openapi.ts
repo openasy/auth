@@ -7,7 +7,11 @@ const str = { type: "string" };
 const dateTime = { type: "string", format: "date-time" };
 const nullable = (s: Schema) => ({ anyOf: [s, { type: "null" }] });
 const obj = (properties: Record<string, Schema>, required = Object.keys(properties)) => ({ type: "object", required, properties });
-const role = { type: "string", enum: ["owner", "admin", "editor", "viewer", "user"], description: "user only in products that turn it on: people who use the product's applications without managing it." };
+const role = {
+  type: "string",
+  enum: ["owner", "admin", "editor", "viewer", "user"],
+  description: "user only in products that turn it on: people who use the product's applications without managing it.",
+};
 const tokenRole = { type: "string", enum: ["admin", "editor", "viewer"] };
 
 const schemas: Record<string, Schema> = {
@@ -59,11 +63,26 @@ const schemas: Record<string, Schema> = {
     providers: { type: "array", items: str, description: "Identity providers this person has signed in with." },
   }),
   AuthSignedIn: obj({ status: { const: "signed-in" }, user: ref("AuthMember"), mfaSetupRequired: { type: "boolean" } }),
-  AuthMfaRequired: obj({ status: { const: "mfa-required" }, methods: { type: "array", items: { type: "string", enum: ["totp", "passkey", "recovery-code"] } } }),
+  AuthMfaRequired: obj({
+    status: { const: "mfa-required" },
+    methods: { type: "array", items: { type: "string", enum: ["totp", "passkey", "recovery-code"] } },
+  }),
   AuthMe: obj({
     user: ref("AuthMember"),
-    session: obj({ id: str, method: str, mfa: { type: "boolean" }, factor: nullable({ type: "string", enum: ["totp", "passkey", "recovery-code"], description: "The second factor the session was opened with, or added during it." }) }),
-    passwordManagedBy: nullable({ type: "string", description: "The directory that keeps this person's password, such as Active Directory; they change it there." }),
+    session: obj({
+      id: str,
+      method: str,
+      mfa: { type: "boolean" },
+      factor: nullable({
+        type: "string",
+        enum: ["totp", "passkey", "recovery-code"],
+        description: "The second factor the session was opened with, or added during it.",
+      }),
+    }),
+    passwordManagedBy: nullable({
+      type: "string",
+      description: "The directory that keeps this person's password, such as Active Directory; they change it there.",
+    }),
     mfaSetupRequired: { type: "boolean" },
     hasPassword: { type: "boolean" },
     passkeys: { type: "array", items: obj({ id: str, name: str, createdAt: dateTime, lastUsedAt: nullable(dateTime) }) },
@@ -73,7 +92,11 @@ const schemas: Record<string, Schema> = {
   AuthRecoveryCodes: obj({ recoveryCodes: { type: "array", items: str, minItems: 10, maxItems: 10 } }),
   AuthLink: obj({ link: { type: "string", format: "uri" }, linkExpiresAt: dateTime }),
   AuthResetLink: obj({
-    link: nullable({ type: "string", format: "uri", description: "null for someone whose password another directory keeps: only their second factors were reset." }),
+    link: nullable({
+      type: "string",
+      format: "uri",
+      description: "null for someone whose password another directory keeps: only their second factors were reset.",
+    }),
     linkExpiresAt: nullable(dateTime),
   }),
   AuthToken: obj({
@@ -130,7 +153,11 @@ const schemas: Record<string, Schema> = {
     scopes: nullable({ type: "array", items: str }),
     pkce: { type: "boolean", description: "Whether the provider supports PKCE with S256, which sign-in uses." },
   }),
-  AuthWebAuthnOptions: { type: "object", required: ["challenge"], description: "WebAuthn options as JSON, for navigator.credentials (or @simplewebauthn/browser)." },
+  AuthWebAuthnOptions: {
+    type: "object",
+    required: ["challenge"],
+    description: "WebAuthn options as JSON, for navigator.credentials (or @simplewebauthn/browser).",
+  },
 };
 
 const json = (schema: Schema, description = "OK") => ({ description, content: { "application/json": { schema } } });
@@ -264,7 +291,13 @@ const paths = {
   },
   "/api/v1/auth/me": {
     get: op({ operationId: "authMe", summary: "The signed-in person", security: signedIn, responses: { "200": json(ref("AuthMe")), ...problems(401, 403) } }),
-    patch: op({ operationId: "authRename", summary: "Change your name", security: signedIn, body: obj({ name: str }), responses: { "200": json(ref("AuthMember")), ...problems(...unsafe, 401) } }),
+    patch: op({
+      operationId: "authRename",
+      summary: "Change your name",
+      security: signedIn,
+      body: obj({ name: str }),
+      responses: { "200": json(ref("AuthMember")), ...problems(...unsafe, 401) },
+    }),
   },
   "/api/v1/auth/me/password": {
     post: op({
@@ -277,10 +310,21 @@ const paths = {
     }),
   },
   "/api/v1/auth/me/sessions": {
-    get: op({ operationId: "authSessions", summary: "Where you are signed in", security: signedIn, responses: { "200": json(obj({ sessions: { type: "array", items: ref("AuthSession") } })), ...problems(401, 403) } }),
+    get: op({
+      operationId: "authSessions",
+      summary: "Where you are signed in",
+      security: signedIn,
+      responses: { "200": json(obj({ sessions: { type: "array", items: ref("AuthSession") } })), ...problems(401, 403) },
+    }),
   },
   "/api/v1/auth/me/sessions/{id}": {
-    delete: op({ operationId: "authRevokeSession", summary: "Sign out a session", security: signedIn, params: ["id"], responses: { "204": empty("Signed out"), ...problems(401, 403, 404) } }),
+    delete: op({
+      operationId: "authRevokeSession",
+      summary: "Sign out a session",
+      security: signedIn,
+      params: ["id"],
+      responses: { "204": empty("Signed out"), ...problems(401, 403, 404) },
+    }),
   },
   "/api/v1/auth/me/totp": {
     post: op({
@@ -309,10 +353,20 @@ const paths = {
     }),
   },
   "/api/v1/auth/me/recovery-codes": {
-    post: op({ operationId: "authNewRecoveryCodes", summary: "Replace your recovery codes", security: signedIn, responses: { "200": json(ref("AuthRecoveryCodes")), ...problems(401, 403, 409) } }),
+    post: op({
+      operationId: "authNewRecoveryCodes",
+      summary: "Replace your recovery codes",
+      security: signedIn,
+      responses: { "200": json(ref("AuthRecoveryCodes")), ...problems(401, 403, 409) },
+    }),
   },
   "/api/v1/auth/me/passkeys/options": {
-    post: op({ operationId: "authPasskeyRegisterOptions", summary: "Start adding a passkey", security: signedIn, responses: { "200": json(ref("AuthWebAuthnOptions")), ...problems(401, 403) } }),
+    post: op({
+      operationId: "authPasskeyRegisterOptions",
+      summary: "Start adding a passkey",
+      security: signedIn,
+      responses: { "200": json(ref("AuthWebAuthnOptions")), ...problems(401, 403) },
+    }),
   },
   "/api/v1/auth/me/passkeys": {
     post: op({
@@ -327,10 +381,22 @@ const paths = {
     }),
   },
   "/api/v1/auth/me/passkeys/{id}": {
-    delete: op({ operationId: "authRemovePasskey", summary: "Remove a passkey", security: signedIn, params: ["id"], responses: { "204": empty("Removed"), ...problems(401, 403, 404) } }),
+    delete: op({
+      operationId: "authRemovePasskey",
+      summary: "Remove a passkey",
+      security: signedIn,
+      params: ["id"],
+      responses: { "204": empty("Removed"), ...problems(401, 403, 404) },
+    }),
   },
   "/api/v1/auth/members": {
-    get: op({ operationId: "authMembers", summary: "List members", security: admin, role: "admin", responses: { "200": json(obj({ members: { type: "array", items: ref("AuthMember") } })), ...problems(401, 403) } }),
+    get: op({
+      operationId: "authMembers",
+      summary: "List members",
+      security: admin,
+      role: "admin",
+      responses: { "200": json(obj({ members: { type: "array", items: ref("AuthMember") } })), ...problems(401, 403) },
+    }),
     post: op({
       operationId: "authInvite",
       summary: "Invite a member",
@@ -338,7 +404,10 @@ const paths = {
       security: signedIn,
       role: "admin",
       body: obj({ email: str, name: str, role }, ["email", "role"]),
-      responses: { "201": json(obj({ member: ref("AuthMember"), link: { type: "string", format: "uri" }, linkExpiresAt: dateTime }), "Invited"), ...problems(...unsafe, 401, 409) },
+      responses: {
+        "201": json(obj({ member: ref("AuthMember"), link: { type: "string", format: "uri" }, linkExpiresAt: dateTime }), "Invited"),
+        ...problems(...unsafe, 401, 409),
+      },
     }),
   },
   "/api/v1/auth/members/{id}": {
@@ -352,7 +421,14 @@ const paths = {
       body: obj({ role, status: { type: "string", enum: ["active", "disabled"] } }, []),
       responses: { "200": json(ref("AuthMember")), ...problems(...unsafe, 401, 404, 409) },
     }),
-    delete: op({ operationId: "authRemoveMember", summary: "Remove a member", security: signedIn, role: "admin", params: ["id"], responses: { "204": empty("Removed"), ...problems(401, 403, 404, 409) } }),
+    delete: op({
+      operationId: "authRemoveMember",
+      summary: "Remove a member",
+      security: signedIn,
+      role: "admin",
+      params: ["id"],
+      responses: { "204": empty("Removed"), ...problems(401, 403, 404, 409) },
+    }),
   },
   "/api/v1/auth/members/{id}/reset": {
     post: op({
@@ -367,7 +443,13 @@ const paths = {
     }),
   },
   "/api/v1/auth/tokens": {
-    get: op({ operationId: "authTokens", summary: "List API tokens", security: admin, role: "admin", responses: { "200": json(obj({ tokens: { type: "array", items: ref("AuthToken") } })), ...problems(401, 403) } }),
+    get: op({
+      operationId: "authTokens",
+      summary: "List API tokens",
+      security: admin,
+      role: "admin",
+      responses: { "200": json(obj({ tokens: { type: "array", items: ref("AuthToken") } })), ...problems(401, 403) },
+    }),
     post: op({
       operationId: "authCreateToken",
       summary: "Create an API token",
@@ -401,7 +483,8 @@ const paths = {
     patch: op({
       operationId: "authUpdateProvider",
       summary: "Change an identity provider",
-      description: "Fields left out keep their value; `clientSecret: null` removes the secret. A new issuer unlinks everyone who signed in through the old one.",
+      description:
+        "Fields left out keep their value; `clientSecret: null` removes the secret. A new issuer unlinks everyone who signed in through the old one.",
       security: signedIn,
       role: "owner",
       params: ["id"],
@@ -430,7 +513,14 @@ const paths = {
     }),
   },
   "/api/v1/auth/tokens/{id}": {
-    delete: op({ operationId: "authRevokeToken", summary: "Revoke an API token", security: signedIn, role: "admin", params: ["id"], responses: { "204": empty("Revoked"), ...problems(401, 403, 404) } }),
+    delete: op({
+      operationId: "authRevokeToken",
+      summary: "Revoke an API token",
+      security: signedIn,
+      role: "admin",
+      params: ["id"],
+      responses: { "204": empty("Revoked"), ...problems(401, 403, 404) },
+    }),
   },
 };
 
@@ -441,9 +531,16 @@ export function authOpenApi() {
     paths,
     components: {
       schemas,
-      responses: { AuthProblem: { description: "An error, as RFC 9457 Problem Details.", content: { "application/problem+json": { schema: ref("AuthProblem") } } } },
+      responses: {
+        AuthProblem: { description: "An error, as RFC 9457 Problem Details.", content: { "application/problem+json": { schema: ref("AuthProblem") } } },
+      },
       securitySchemes: {
-        session: { type: "apiKey", in: "cookie", name: "__Host-openasy-session", description: "The browser session after signing in (`openasy-session` on plain http://localhost)." },
+        session: {
+          type: "apiKey",
+          in: "cookie",
+          name: "__Host-openasy-session",
+          description: "The browser session after signing in (`openasy-session` on plain http://localhost).",
+        },
         apiToken: { type: "http", scheme: "bearer", description: "An API token from Settings → API tokens: one role, always an expiry." },
       },
     },

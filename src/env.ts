@@ -47,7 +47,8 @@ export function oidcFromEnv(env: Record<string, string | undefined>, legacyPrefi
   const mapping = v("ROLE_MAPPING");
   const defaultRole = v("DEFAULT_ROLE");
   const autoRedirect = env[name("AUTO_REDIRECT")]?.trim() || undefined;
-  if (autoRedirect && autoRedirect !== "true" && autoRedirect !== "false") throw new Error(`${name("AUTO_REDIRECT")} must be true or false, not "${autoRedirect}"`);
+  if (autoRedirect && autoRedirect !== "true" && autoRedirect !== "false")
+    throw new Error(`${name("AUTO_REDIRECT")} must be true or false, not "${autoRedirect}"`);
   const provider: OidcProvider = {
     id: "sso",
     name: v("NAME") ?? p?.name ?? "SSO",
@@ -66,7 +67,9 @@ export function oidcFromEnv(env: Record<string, string | undefined>, legacyPrefi
         )
       : undefined,
     defaultRole: defaultRole ? role(defaultRole, name("DEFAULT_ROLE")) : undefined,
-    allowedDomains: v("ALLOWED_DOMAINS")?.split(",").map((d) => d.trim().toLowerCase()),
+    allowedDomains: v("ALLOWED_DOMAINS")
+      ?.split(",")
+      .map((d) => d.trim().toLowerCase()),
     autoRedirect: autoRedirect === "true" || undefined,
   };
   if (legacy.length) {

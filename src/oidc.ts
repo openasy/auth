@@ -92,7 +92,13 @@ export function createOidc(redirectUri: (id: string) => string) {
 
     /** Reads a provider's discovery document, to check its issuer before it is saved. */
     async discover(issuer: string, allowInsecure: boolean) {
-      const cfg = await client.discovery(new URL(issuer), "openasy-check", undefined, undefined, allowInsecure ? { execute: [client.allowInsecureRequests] } : undefined);
+      const cfg = await client.discovery(
+        new URL(issuer),
+        "openasy-check",
+        undefined,
+        undefined,
+        allowInsecure ? { execute: [client.allowInsecureRequests] } : undefined,
+      );
       const m = cfg.serverMetadata();
       return {
         issuer: m.issuer,

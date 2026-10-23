@@ -40,8 +40,7 @@ export interface Me {
 }
 
 export type SignInResult =
-  | { status: "signed-in"; user: Member; mfaSetupRequired: boolean }
-  | { status: "mfa-required"; methods: Array<"totp" | "passkey" | "recovery-code"> };
+  { status: "signed-in"; user: Member; mfaSetupRequired: boolean } | { status: "mfa-required"; methods: Array<"totp" | "passkey" | "recovery-code"> };
 
 export interface Session {
   id: string;
@@ -154,7 +153,8 @@ export const auth = {
   signOut: () => call<void>("/logout", { body: {} }),
 
   link: (token: string) => call<{ kind: "invite" | "reset"; email: string; name: string; productName: string }>(`/links/${encodeURIComponent(token)}`),
-  acceptLink: (token: string, password: string, name?: string) => call<SignInResult & { status: "signed-in" }>(`/links/${encodeURIComponent(token)}`, { body: { password, name } }),
+  acceptLink: (token: string, password: string, name?: string) =>
+    call<SignInResult & { status: "signed-in" }>(`/links/${encodeURIComponent(token)}`, { body: { password, name } }),
 
   me: () => call<Me>("/me"),
   rename: (name: string) => call<Member>("/me", { method: "PATCH", body: { name } }),
@@ -176,20 +176,27 @@ export const auth = {
 
   members: () => call<{ members: Member[] }>("/members").then((r) => r.members),
   invite: (b: { email: string; name?: string; role: Role }) => call<{ member: Member; link: string; linkExpiresAt: string }>("/members", { body: b }),
-  updateMember: (id: string, b: { role?: Role; status?: "active" | "disabled" }) => call<Member>(`/members/${encodeURIComponent(id)}`, { method: "PATCH", body: b }),
+  updateMember: (id: string, b: { role?: Role; status?: "active" | "disabled" }) =>
+    call<Member>(`/members/${encodeURIComponent(id)}`, { method: "PATCH", body: b }),
   removeMember: (id: string) => call<void>(`/members/${encodeURIComponent(id)}`, { method: "DELETE" }),
-  resetMember: (id: string, opts: { mfa?: boolean } = {}) => call<{ link: string | null; linkExpiresAt: string | null }>(`/members/${encodeURIComponent(id)}/reset`, { body: opts }),
+  resetMember: (id: string, opts: { mfa?: boolean } = {}) =>
+    call<{ link: string | null; linkExpiresAt: string | null }>(`/members/${encodeURIComponent(id)}/reset`, { body: opts }),
 
   tokens: () => call<{ tokens: ApiToken[] }>("/tokens").then((r) => r.tokens),
   /** The secret is in `token` and is never shown again. */
-  createToken: (b: { name: string; role: ApiToken["role"]; expiresInDays?: number }) => call<{ id: string; name: string; role: ApiToken["role"]; expiresAt: string; token: string }>("/tokens", { body: b }),
+  createToken: (b: { name: string; role: ApiToken["role"]; expiresInDays?: number }) =>
+    call<{ id: string; name: string; role: ApiToken["role"]; expiresAt: string; token: string }>("/tokens", { body: b }),
   revokeToken: (id: string) => call<void>(`/tokens/${encodeURIComponent(id)}`, { method: "DELETE" }),
 
   providers: () => call<{ providers: Provider[]; redirectUriTemplate: string }>("/providers"),
   addProvider: (b: ProviderChange) => call<Provider>("/providers", { body: b }),
   updateProvider: (id: string, b: ProviderChange) => call<Provider>(`/providers/${encodeURIComponent(id)}`, { method: "PATCH", body: b }),
   removeProvider: (id: string) => call<void>(`/providers/${encodeURIComponent(id)}`, { method: "DELETE" }),
-  discoverProvider: (issuer: string) => call<{ issuer: string; authorizationEndpoint: string | null; userinfoEndpoint: string | null; scopes: string[] | null; pkce: boolean }>("/providers/discover", { body: { issuer } }),
+  discoverProvider: (issuer: string) =>
+    call<{ issuer: string; authorizationEndpoint: string | null; userinfoEndpoint: string | null; scopes: string[] | null; pkce: boolean }>(
+      "/providers/discover",
+      { body: { issuer } },
+    ),
 };
 
 /**
@@ -199,7 +206,12 @@ export const auth = {
  */
 export function takeAuthParams(): { setup?: string; link?: string; error?: string; local: boolean } {
   const url = new URL(location.href);
-  const out = { setup: url.searchParams.get("setup") ?? undefined, link: url.searchParams.get("link") ?? undefined, error: url.searchParams.get("auth_error") ?? undefined, local: url.searchParams.has("local") };
+  const out = {
+    setup: url.searchParams.get("setup") ?? undefined,
+    link: url.searchParams.get("link") ?? undefined,
+    error: url.searchParams.get("auth_error") ?? undefined,
+    local: url.searchParams.has("local"),
+  };
   if (out.setup || out.link || out.error) {
     for (const k of ["setup", "link", "auth_error"]) url.searchParams.delete(k);
     history.replaceState(history.state, "", url.pathname + url.search + url.hash);

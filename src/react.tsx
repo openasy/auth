@@ -2,9 +2,34 @@
 // and API tokens settings. They follow the Identity/Sign-in stories in the ui Storybook.
 import { Badge, Button, Callout, defineMessages, Panel, SelectField, Switch, TextField, useBrand } from "@openasy/ui";
 import { ArrowLeft, Copy, Download, Fingerprint, KeyRound, LogIn, Pencil, Plus, ShieldCheck, Smartphone, Trash2 } from "lucide-react";
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ClipboardEvent, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type FormEvent,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import { encode } from "uqr";
-import { auth, AuthApiError, passkeysSupported, signedOut, takeAuthParams, type ApiToken, type Me, type Member, type Methods, type Provider, type ProviderChange, type Role, type Session } from "./client.ts";
+import {
+  auth,
+  AuthApiError,
+  passkeysSupported,
+  signedOut,
+  takeAuthParams,
+  type ApiToken,
+  type Me,
+  type Member,
+  type Methods,
+  type Provider,
+  type ProviderChange,
+  type Role,
+  type Session,
+} from "./client.ts";
 import de from "./messages/de.json" with { type: "json" };
 import en from "./messages/en.json" with { type: "json" };
 import tr from "./messages/tr.json" with { type: "json" };
@@ -210,7 +235,11 @@ function RecoveryCodes({ codes, productName, onDone }: { codes: string[]; produc
       <Callout tone="warning" title={t("recovery.saveTitle")}>
         {t("recovery.saveBody")}
       </Callout>
-      <ul aria-label={t("recovery.codes")} className="grid grid-cols-2 gap-1.5 rounded-md border border-line bg-canvas p-3 font-mono text-sm" style={{ listStyle: "none", margin: 0 }}>
+      <ul
+        aria-label={t("recovery.codes")}
+        className="grid grid-cols-2 gap-1.5 rounded-md border border-line bg-canvas p-3 font-mono text-sm"
+        style={{ listStyle: "none", margin: 0 }}
+      >
         {codes.map((c) => (
           <li key={c}>{c}</li>
         ))}
@@ -236,11 +265,28 @@ function RecoveryCodes({ codes, productName, onDone }: { codes: string[]; produc
 
 // ---- Sign-in screens ----------------------------------------------------------------------------------------------
 
-function PasswordFields({ password, setPassword, confirm, setConfirm }: { password: string; setPassword: (v: string) => void; confirm: string; setConfirm: (v: string) => void }) {
+function PasswordFields({
+  password,
+  setPassword,
+  confirm,
+  setConfirm,
+}: {
+  password: string;
+  setPassword: (v: string) => void;
+  confirm: string;
+  setConfirm: (v: string) => void;
+}) {
   const t = useT();
   return (
     <>
-      <TextField label={t("password.label")} type="password" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} hint={t("password.hint")} />
+      <TextField
+        label={t("password.label")}
+        type="password"
+        autoComplete="new-password"
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+        hint={t("password.hint")}
+      />
       <TextField
         label={t("password.repeat")}
         type="password"
@@ -255,7 +301,17 @@ function PasswordFields({ password, setPassword, confirm, setConfirm }: { passwo
 
 const passwordOk = (p: string, c: string) => p.length >= 12 && p === c;
 
-function SignIn({ methods, initialError, onSignedIn, onMfa }: { methods: Methods; initialError?: string; onSignedIn: () => void; onMfa: (methods: string[]) => void }) {
+function SignIn({
+  methods,
+  initialError,
+  onSignedIn,
+  onMfa,
+}: {
+  methods: Methods;
+  initialError?: string;
+  onSignedIn: () => void;
+  onMfa: (methods: string[]) => void;
+}) {
   const t = useT();
   const name = useProductName();
   const [email, setEmail] = useState("");
@@ -289,7 +345,14 @@ function SignIn({ methods, initialError, onSignedIn, onMfa }: { methods: Methods
       <Problem error={error} title={t("signIn.failed")} />
       {methods.passwords && (
         <form className="flex flex-col gap-2.5" onSubmit={submit} noValidate>
-          <TextField label={t("common.email")} type="email" autoComplete="username webauthn" placeholder="you@example.com" value={email} onChange={(e) => setEmail(e.target.value)} />
+          <TextField
+            label={t("common.email")}
+            type="email"
+            autoComplete="username webauthn"
+            placeholder="you@example.com"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+          />
           <TextField
             label={t("password.label")}
             type="password"
@@ -351,9 +414,22 @@ function MfaStep({ methods, onSignedIn, onBack }: { methods: string[]; onSignedI
         {mode === "totp" ? (
           <CodeInput value={code} onChange={setCode} />
         ) : (
-          <TextField label={t("mfa.recoveryCode")} mono autoComplete="off" value={recovery} onChange={(e) => setRecovery(e.target.value)} placeholder="xxxxx-xxxxx" />
+          <TextField
+            label={t("mfa.recoveryCode")}
+            mono
+            autoComplete="off"
+            value={recovery}
+            onChange={(e) => setRecovery(e.target.value)}
+            placeholder="xxxxx-xxxxx"
+          />
         )}
-        <Button type="submit" variant="primary" icon={<ShieldCheck />} className="w-full" disabled={mode === "totp" ? code.some((d) => !d) : recovery.trim().length < 10}>
+        <Button
+          type="submit"
+          variant="primary"
+          icon={<ShieldCheck />}
+          className="w-full"
+          disabled={mode === "totp" ? code.some((d) => !d) : recovery.trim().length < 10}
+        >
           {t("mfa.verify")}
         </Button>
       </form>
@@ -517,7 +593,13 @@ function Setup({ token, methods, onDone }: { token: string; methods: Methods; on
       {methods.providers.length > 0 && (
         <div className="flex flex-col gap-1.5">
           {methods.providers.map((p) => (
-            <Button key={p.id} className="w-full" variant={methods.passwords ? "secondary" : "primary"} icon={<KeyRound />} onClick={() => auth.setupWith(p.id, token)}>
+            <Button
+              key={p.id}
+              className="w-full"
+              variant={methods.passwords ? "secondary" : "primary"}
+              icon={<KeyRound />}
+              onClick={() => auth.setupWith(p.id, token)}
+            >
               {t("common.continueWith", { provider: p.name })}
             </Button>
           ))}
@@ -597,7 +679,13 @@ type Stage =
  * has none. With a provider set to go straight to, the sign-in screen is that provider's, except after signing out,
  * after a failed sign-in and with ?local=1. Inside, `useAuth()` gives the person and their role.
  */
-export function AuthGate({ children, product }: { children: ReactNode; /** The product's name, as in "Sign in to OpenAsy Vulnerabilities". */ product?: string }) {
+export function AuthGate({
+  children,
+  product,
+}: {
+  children: ReactNode;
+  /** The product's name, as in "Sign in to OpenAsy Vulnerabilities". */ product?: string;
+}) {
   return (
     <ProductContext.Provider value={product}>
       <Gate>{children}</Gate>
@@ -649,7 +737,9 @@ function Gate({ children }: { children: ReactNode }) {
   const onInvalidLink = useCallback((error: string) => setStage({ k: "sign-in", error }), []);
 
   const straightTo =
-    stage.k === "sign-in" && !stage.manual && (!stage.error || stage.expired) && !local && !signedOut.get() ? methods?.providers.find((p) => p.id === methods.autoRedirect) : undefined;
+    stage.k === "sign-in" && !stage.manual && (!stage.error || stage.expired) && !local && !signedOut.get()
+      ? methods?.providers.find((p) => p.id === methods.autoRedirect)
+      : undefined;
   useEffect(() => {
     if (straightTo) auth.signInWith(straightTo.id);
   }, [straightTo]);
@@ -738,7 +828,9 @@ function Table({ label, head, children, minWidth }: { label: string; head: strin
   );
 }
 
-const Cell = ({ children, mono = false }: { children: ReactNode; mono?: boolean }) => <td className={`border-b border-line px-2 py-1.5 align-middle ${mono ? "font-mono text-xs" : ""}`}>{children}</td>;
+const Cell = ({ children, mono = false }: { children: ReactNode; mono?: boolean }) => (
+  <td className={`border-b border-line px-2 py-1.5 align-middle ${mono ? "font-mono text-xs" : ""}`}>{children}</td>
+);
 
 /** The signed-in person: name, password, second factors, recovery codes and sessions. */
 export function AccountSettings() {
@@ -823,7 +915,13 @@ export function AccountSettings() {
               }, t("account.passwordChanged"));
             }}
           >
-            <TextField label={t("account.currentPassword")} type="password" autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} />
+            <TextField
+              label={t("account.currentPassword")}
+              type="password"
+              autoComplete="current-password"
+              value={current}
+              onChange={(e) => setCurrent(e.target.value)}
+            />
             <PasswordFields password={password} setPassword={setPassword} confirm={confirm} setConfirm={setConfirm} />
             <div>
               <Button type="submit" size="sm" disabled={!current || !passwordOk(password, confirm)}>
@@ -834,11 +932,15 @@ export function AccountSettings() {
         </Panel>
       )}
 
-      <Panel title={t("mfa.title")} description={me.user.mfa.totp || me.passkeys.length ? t("account.mfaOn", { count: me.recoveryCodesLeft }) : t("common.off")}>
+      <Panel
+        title={t("mfa.title")}
+        description={me.user.mfa.totp || me.passkeys.length ? t("account.mfaOn", { count: me.recoveryCodesLeft }) : t("common.off")}
+      >
         <div className="flex flex-col gap-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="flex items-center gap-2 text-sm">
-              <Smartphone className="h-4 w-4" aria-hidden /> {t("account.app")} {me.user.mfa.totp ? <Badge tone="success">{t("common.on")}</Badge> : <Badge>{t("common.off")}</Badge>}
+              <Smartphone className="h-4 w-4" aria-hidden /> {t("account.app")}{" "}
+              {me.user.mfa.totp ? <Badge tone="success">{t("common.on")}</Badge> : <Badge>{t("common.off")}</Badge>}
             </span>
             {me.user.mfa.totp ? (
               <Button size="sm" variant="ghost" icon={<Trash2 />} onClick={() => void act(auth.removeTotp, t("account.appRemoved"))}>
@@ -866,7 +968,8 @@ export function AccountSettings() {
           )}
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="flex items-center gap-2 text-sm">
-              <Fingerprint className="h-4 w-4" aria-hidden /> {t("account.passkeys")} {me.passkeys.length ? <Badge tone="success">{me.passkeys.length}</Badge> : <Badge>{t("common.none")}</Badge>}
+              <Fingerprint className="h-4 w-4" aria-hidden /> {t("account.passkeys")}{" "}
+              {me.passkeys.length ? <Badge tone="success">{me.passkeys.length}</Badge> : <Badge>{t("common.none")}</Badge>}
             </span>
             {passkeysSupported() && (
               <Button
@@ -922,7 +1025,11 @@ export function AccountSettings() {
               <Cell>{when(t, s.lastSeenAt)}</Cell>
               <Cell>
                 {!s.current && (
-                  <Button size="xs" variant="ghost" onClick={() => void act(() => auth.revokeSession(s.id).then(sessions.reload), t("account.sessionSignedOut"))}>
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    onClick={() => void act(() => auth.revokeSession(s.id).then(sessions.reload), t("account.sessionSignedOut"))}
+                  >
                     {t("common.signOut")}
                   </Button>
                 )}
@@ -936,8 +1043,26 @@ export function AccountSettings() {
 }
 
 function deviceName(t: T, ua: string) {
-  const browser = /Edg\//.test(ua) ? "Edge" : /Firefox\//.test(ua) ? "Firefox" : /Chrome\//.test(ua) ? "Chrome" : /Safari\//.test(ua) ? "Safari" : t("account.browser");
-  const os = /Windows/.test(ua) ? "Windows" : /Mac OS X/.test(ua) ? "macOS" : /Android/.test(ua) ? "Android" : /iPhone|iPad/.test(ua) ? "iOS" : /Linux/.test(ua) ? "Linux" : "";
+  const browser = /Edg\//.test(ua)
+    ? "Edge"
+    : /Firefox\//.test(ua)
+      ? "Firefox"
+      : /Chrome\//.test(ua)
+        ? "Chrome"
+        : /Safari\//.test(ua)
+          ? "Safari"
+          : t("account.browser");
+  const os = /Windows/.test(ua)
+    ? "Windows"
+    : /Mac OS X/.test(ua)
+      ? "macOS"
+      : /Android/.test(ua)
+        ? "Android"
+        : /iPhone|iPad/.test(ua)
+          ? "iOS"
+          : /Linux/.test(ua)
+            ? "Linux"
+            : "";
   return os ? t("account.deviceOn", { browser, os }) : browser;
 }
 
@@ -1009,7 +1134,10 @@ export function MembersSettings() {
       {link && <LinkBox {...link} onDone={() => setLink(undefined)} />}
       <Problem error={members.error} />
       <Panel title={t("members.title")} flush>
-        <Table label={t("members.title")} head={[t("common.name"), t("common.email"), t("common.role"), t("common.status"), t("members.secondFactor"), t("members.lastSignIn"), ""]}>
+        <Table
+          label={t("members.title")}
+          head={[t("common.name"), t("common.email"), t("common.role"), t("common.status"), t("members.secondFactor"), t("members.lastSignIn"), ""]}
+        >
           {(members.rows ?? []).map((m) => {
             const manageable = m.id !== me.user.id && (isOwner || m.role !== "owner");
             return (
@@ -1018,7 +1146,12 @@ export function MembersSettings() {
                 <Cell mono>{m.email}</Cell>
                 <Cell>
                   {manageable ? (
-                    <SelectField aria-label={t("members.roleOf", { email: m.email })} value={m.role} onChange={(e) => void act(() => auth.updateMember(m.id, { role: e.target.value as Role }))} options={roleOptions} />
+                    <SelectField
+                      aria-label={t("members.roleOf", { email: m.email })}
+                      value={m.role}
+                      onChange={(e) => void act(() => auth.updateMember(m.id, { role: e.target.value as Role }))}
+                      options={roleOptions}
+                    />
                   ) : (
                     roleName(t, m.role)
                   )}
@@ -1038,18 +1171,28 @@ export function MembersSettings() {
                           void act(async () => {
                             const r = await auth.resetMember(m.id, { mfa: confirm(t("members.alsoMfa", { email: m.email })) });
                             // Someone whose password another directory keeps gets no link: they sign in with it again.
-                            if (r.link && r.linkExpiresAt) setLink({ title: t("members.passwordLinkFor", { email: m.email }), link: r.link, expiresAt: r.linkExpiresAt });
+                            if (r.link && r.linkExpiresAt)
+                              setLink({ title: t("members.passwordLinkFor", { email: m.email }), link: r.link, expiresAt: r.linkExpiresAt });
                           })
                         }
                       >
                         {m.status === "invited" ? t("members.newLink") : t("members.reset")}
                       </Button>
                       {m.status !== "invited" && (
-                        <Button size="xs" variant="ghost" onClick={() => void act(() => auth.updateMember(m.id, { status: m.status === "active" ? "disabled" : "active" }))}>
+                        <Button
+                          size="xs"
+                          variant="ghost"
+                          onClick={() => void act(() => auth.updateMember(m.id, { status: m.status === "active" ? "disabled" : "active" }))}
+                        >
                           {m.status === "active" ? t("members.disable") : t("members.enable")}
                         </Button>
                       )}
-                      <Button size="xs" variant="ghost" icon={<Trash2 />} onClick={() => confirm(t("members.confirmRemove", { email: m.email })) && void act(() => auth.removeMember(m.id))}>
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        icon={<Trash2 />}
+                        onClick={() => confirm(t("members.confirmRemove", { email: m.email })) && void act(() => auth.removeMember(m.id))}
+                      >
                         {t("common.remove")}
                       </Button>
                     </span>
@@ -1100,7 +1243,12 @@ export function TokensSettings() {
           }}
         >
           <TextField label={t("common.name")} value={name} onChange={(e) => setName(e.target.value)} placeholder={t("tokens.placeholder")} />
-          <SelectField label={t("common.role")} value={role} onChange={(e) => setRole(e.target.value as ApiToken["role"])} options={roles.map((r) => ({ value: r, label: roleName(t, r) }))} />
+          <SelectField
+            label={t("common.role")}
+            value={role}
+            onChange={(e) => setRole(e.target.value as ApiToken["role"])}
+            options={roles.map((r) => ({ value: r, label: roleName(t, r) }))}
+          />
           <SelectField
             label={t("tokens.expires")}
             value={days}
@@ -1143,7 +1291,12 @@ export function TokensSettings() {
               <Cell>{tk.expired ? <Badge tone="danger">{t("tokens.expired")}</Badge> : when(t, tk.expiresAt)}</Cell>
               <Cell>{when(t, tk.lastUsedAt)}</Cell>
               <Cell>
-                <Button size="xs" variant="ghost" icon={<Trash2 />} onClick={() => confirm(t("tokens.confirmRevoke", { name: tk.name })) && void act(() => auth.revokeToken(tk.id))}>
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  icon={<Trash2 />}
+                  onClick={() => confirm(t("tokens.confirmRevoke", { name: tk.name })) && void act(() => auth.revokeToken(tk.id))}
+                >
                   {t("tokens.revoke")}
                 </Button>
               </Cell>
@@ -1162,10 +1315,16 @@ const fieldClass = "w-full rounded-md border border-line-strong bg-surface px-2.
 /** "group = role" per line, as people write it, to the role mapping the API takes. */
 function parseMapping(t: T, text: string): Record<string, Role> {
   const out: Record<string, Role> = {};
-  for (const line of text.split("\n").map((l) => l.trim()).filter(Boolean)) {
+  for (const line of text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)) {
     const i = line.lastIndexOf("=");
     const group = line.slice(0, i).trim();
-    const role = line.slice(i + 1).trim().toLowerCase();
+    const role = line
+      .slice(i + 1)
+      .trim()
+      .toLowerCase();
     if (i < 1 || !group || !(RANK as string[]).includes(role)) throw new Error(t("providers.badMapping", { line }));
     out[group] = role as Role;
   }
@@ -1248,7 +1407,12 @@ function ProviderForm({ editing, template, onSaved, onCancel }: { editing?: Prov
     <Panel title={editing ? t("providers.changeOne", { name: editing.name }) : t("providers.addTitle")} description={t("providers.addBody")}>
       <form className="flex flex-col gap-4" onSubmit={save}>
         {!editing && (
-          <SelectField label={t("providers.provider")} value={presetId} onChange={(e) => choose(e.target.value)} options={PRESETS.map((x) => ({ value: x.id, label: x.id === "generic" ? t("providers.generic") : x.name }))} />
+          <SelectField
+            label={t("providers.provider")}
+            value={presetId}
+            onChange={(e) => choose(e.target.value)}
+            options={PRESETS.map((x) => ({ value: x.id, label: x.id === "generic" ? t("providers.generic") : x.name }))}
+          />
         )}
         <div className="flex flex-col gap-2 rounded-md bg-canvas p-3 text-sm">
           <span className="font-medium text-fg">{t("providers.at", { provider: p.id === "generic" ? t("providers.yourProvider") : p.name })}</span>
@@ -1276,7 +1440,9 @@ function ProviderForm({ editing, template, onSaved, onCancel }: { editing?: Prov
         </div>
         <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(16rem, 1fr))" }}>
           <TextField label={t("providers.buttonName")} placeholder={p.name} value={name} onChange={(e) => setName(e.target.value)} />
-          {!editing && <TextField label="Id" mono placeholder={p.id} hint={t("providers.idHint")} value={id} onChange={(e) => setId(e.target.value.toLowerCase())} />}
+          {!editing && (
+            <TextField label="Id" mono placeholder={p.id} hint={t("providers.idHint")} value={id} onChange={(e) => setId(e.target.value.toLowerCase())} />
+          )}
           <TextField
             label={t("providers.issuer")}
             mono
@@ -1301,13 +1467,27 @@ function ProviderForm({ editing, template, onSaved, onCancel }: { editing?: Prov
             hint={t("providers.secretHint")}
             onChange={(e) => setClientSecret(e.target.value)}
           />
-          <TextField label={t("providers.groupsClaim")} mono placeholder="groups" hint={t("providers.groupsHint")} value={groupsClaim} onChange={(e) => setGroupsClaim(e.target.value)} />
+          <TextField
+            label={t("providers.groupsClaim")}
+            mono
+            placeholder="groups"
+            hint={t("providers.groupsHint")}
+            value={groupsClaim}
+            onChange={(e) => setGroupsClaim(e.target.value)}
+          />
         </div>
         <div className="flex flex-col gap-1">
           <label htmlFor="oa-role-mapping" className="text-xs font-medium text-fg">
             {t("providers.rolesFromGroups")}
           </label>
-          <textarea id="oa-role-mapping" rows={3} className={fieldClass} placeholder={"ops-admins = admin\nstaff = viewer"} value={mapping} onChange={(e) => setMapping(e.target.value)} />
+          <textarea
+            id="oa-role-mapping"
+            rows={3}
+            className={fieldClass}
+            placeholder={"ops-admins = admin\nstaff = viewer"}
+            value={mapping}
+            onChange={(e) => setMapping(e.target.value)}
+          />
           <span className="text-xs text-fg-muted">{t("providers.mappingHint")}</span>
         </div>
         <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(16rem, 1fr))" }}>
@@ -1315,17 +1495,21 @@ function ProviderForm({ editing, template, onSaved, onCancel }: { editing?: Prov
             label={t("providers.uninvited")}
             value={defaultRole}
             onChange={(e) => setDefaultRole(e.target.value as Role | "")}
-            options={[{ value: "", label: t("providers.refused") }, ...joinRoles.map((r) => ({ value: r, label: t("providers.joinAs", { role: roleName(t, r) }) }))]}
+            options={[
+              { value: "", label: t("providers.refused") },
+              ...joinRoles.map((r) => ({ value: r, label: t("providers.joinAs", { role: roleName(t, r) }) })),
+            ]}
           />
-          <TextField label={t("providers.domains")} placeholder="example.com" hint={t("providers.domainsHint")} value={domains} onChange={(e) => setDomains(e.target.value)} />
+          <TextField
+            label={t("providers.domains")}
+            placeholder="example.com"
+            hint={t("providers.domainsHint")}
+            value={domains}
+            onChange={(e) => setDomains(e.target.value)}
+          />
         </div>
         <Switch checked={enabled} onCheckedChange={setEnabled} label={t("providers.show")} description={t("providers.showHint")} />
-        <Switch
-          checked={autoRedirect}
-          onCheckedChange={setAutoRedirect}
-          label={t("providers.straight")}
-          description={t("providers.straightHint")}
-        />
+        <Switch checked={autoRedirect} onCheckedChange={setAutoRedirect} label={t("providers.straight")} description={t("providers.straightHint")} />
         <Problem error={error} title={t("common.notSaved")} />
         <span className="flex gap-2">
           <Button type="submit" variant="primary" loading={busy} disabled={!issuer.trim() || !clientId.trim()}>
@@ -1372,7 +1556,12 @@ export function SignInSettings() {
       )}
       <Problem error={error} />
       {form && data ? (
-        <ProviderForm editing={form.editing} template={data.redirectUriTemplate} onSaved={() => (setForm(undefined), void reload())} onCancel={() => setForm(undefined)} />
+        <ProviderForm
+          editing={form.editing}
+          template={data.redirectUriTemplate}
+          onSaved={() => (setForm(undefined), void reload())}
+          onCancel={() => setForm(undefined)}
+        />
       ) : (
         isOwner && (
           <span>
@@ -1386,7 +1575,11 @@ export function SignInSettings() {
         {data?.providers.length === 0 ? (
           <p className="m-0 px-3 pb-3 text-sm text-fg-muted">{t("providers.noneYet")}</p>
         ) : (
-          <Table label={t("providers.title")} head={[t("common.name"), t("providers.issuer"), t("providers.rolesFromGroups"), t("common.status"), ""]} minWidth="52rem">
+          <Table
+            label={t("providers.title")}
+            head={[t("common.name"), t("providers.issuer"), t("providers.rolesFromGroups"), t("common.status"), ""]}
+            minWidth="52rem"
+          >
             {(data?.providers ?? []).map((p) => (
               <tr key={p.id}>
                 <Cell>{p.name}</Cell>
@@ -1402,7 +1595,11 @@ export function SignInSettings() {
                 </Cell>
                 <Cell>
                   <span className="flex gap-1 whitespace-nowrap">
-                    {p.source === "environment" ? <Badge tone="neutral">{t("providers.environment")}</Badge> : <Badge tone={p.enabled ? "success" : "neutral"}>{p.enabled ? t("common.on") : t("common.off")}</Badge>}
+                    {p.source === "environment" ? (
+                      <Badge tone="neutral">{t("providers.environment")}</Badge>
+                    ) : (
+                      <Badge tone={p.enabled ? "success" : "neutral"}>{p.enabled ? t("common.on") : t("common.off")}</Badge>
+                    )}
                     {p.autoRedirect && <Badge tone="neutral">{t("providers.straightBadge")}</Badge>}
                   </span>
                 </Cell>

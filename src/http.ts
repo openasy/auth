@@ -59,7 +59,13 @@ export function sendJson(res: ServerResponse, status: number, data: unknown, hea
 
 /** RFC 9457 Problem Details, in the same shape every product uses (ADR 0024). */
 export function sendProblem(res: ServerResponse, err: AuthError, headers: Record<string, string | string[]> = {}) {
-  const body = JSON.stringify({ type: `https://openasy.github.io/problems/${err.code}`, title: err.title, status: err.status, code: err.code, detail: err.message });
+  const body = JSON.stringify({
+    type: `https://openasy.github.io/problems/${err.code}`,
+    title: err.title,
+    status: err.status,
+    code: err.code,
+    detail: err.message,
+  });
   res.writeHead(err.status, { ...SECURITY_HEADERS, ...headers, "content-type": "application/problem+json", "content-length": Buffer.byteLength(body) });
   res.end(body);
 }
@@ -103,7 +109,8 @@ export function str(body: Record<string, unknown>, name: string, opts: { min?: n
 export function str(body: Record<string, unknown>, name: string, { min = 1, max = 256, optional = false }: { min?: number; max?: number; optional?: boolean }) {
   const v = body[name];
   if (v === undefined && optional) return undefined;
-  if (typeof v !== "string" || v.length < min || v.length > max) throw new AuthError(422, "invalid-body", `${name} must be a string of ${min} to ${max} characters.`);
+  if (typeof v !== "string" || v.length < min || v.length > max)
+    throw new AuthError(422, "invalid-body", `${name} must be a string of ${min} to ${max} characters.`);
   return v;
 }
 

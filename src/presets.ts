@@ -134,7 +134,10 @@ export const PRESETS: ProviderPreset[] = [
     issuerExample: "https://idp.example.com",
     scopes: ["openid", "email", "profile"],
     groupsClaim: "groups",
-    steps: ["Register a confidential client using the authorization code flow, with the redirect URI {redirectUri}.", "Copy the client ID and the client secret."],
+    steps: [
+      "Register a confidential client using the authorization code flow, with the redirect URI {redirectUri}.",
+      "Copy the client ID and the client secret.",
+    ],
     docs: "https://openid.net/specs/openid-connect-core-1_0.html",
   },
 ];

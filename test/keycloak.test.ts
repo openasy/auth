@@ -26,7 +26,15 @@ async function admin(path: string, init: { method?: string; body?: unknown } = {
 
 async function addPerson(username: string, group?: string) {
   await admin("/users", {
-    body: { username, email: `${username}@example.com`, emailVerified: true, enabled: true, firstName: username, lastName: "Test", credentials: [{ type: "password", value: "correct horse battery", temporary: false }] },
+    body: {
+      username,
+      email: `${username}@example.com`,
+      emailVerified: true,
+      enabled: true,
+      firstName: username,
+      lastName: "Test",
+      credentials: [{ type: "password", value: "correct horse battery", temporary: false }],
+    },
   });
   const [user] = (await admin(`/users?username=${username}&exact=true`)) as Array<{ id: string }>;
   if (group) {
@@ -50,7 +58,11 @@ async function signInThroughKeycloak(b: Browser, username: string) {
   const page = await (await kc(start.headers.get("location")!)).text();
   const action = page.match(/<form[^>]*id="kc-form-login"[^>]*action="([^"]+)"/)?.[1]?.replaceAll("&amp;", "&");
   if (!action) throw new Error("Keycloak did not show its sign-in form");
-  const back = await kc(action, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ username, password: "correct horse battery", credentialId: "" }) });
+  const back = await kc(action, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ username, password: "correct horse battery", credentialId: "" }),
+  });
   const callback = new URL(back.headers.get("location")!);
   const done = await b.fetch(callback.pathname + callback.search);
   return decodeURIComponent(done.headers.get("location") ?? "");
@@ -85,7 +97,11 @@ describe.skipIf(!KC)("sign-in through Keycloak", () => {
       await addPerson(`noel-${run}`);
       const ada = app.browser();
       expect(await signInThroughKeycloak(ada, `ada-${run}`)).toBe("/");
-      expect((await ada.json<{ user: { email: string; role: string; providers: string[] } }>("/api/v1/auth/me")).body.user).toMatchObject({ email: `ada-${run}@example.com`, role: "admin", providers: ["keycloak"] });
+      expect((await ada.json<{ user: { email: string; role: string; providers: string[] } }>("/api/v1/auth/me")).body.user).toMatchObject({
+        email: `ada-${run}@example.com`,
+        role: "admin",
+        providers: ["keycloak"],
+      });
       // Noel is in no mapped group and nobody invited him: he is refused, and no member is made for him.
       expect(await signInThroughKeycloak(app.browser(), `noel-${run}`)).toMatch(/auth_error=You have no access/);
       expect(app.db.prepare("SELECT COUNT(*) AS n FROM auth_users WHERE email = ?").get(`noel-${run}@example.com`)).toEqual({ n: 0 });
