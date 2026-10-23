@@ -137,6 +137,8 @@ const MIGRATIONS: Array<string | Migration> = [
   },
   `-- 0.4.0: which second factor opened a session (totp, passkey or recovery-code), for products that ask for a passkey.
    ALTER TABLE auth_sessions ADD COLUMN factor TEXT`,
+  `-- 0.5.0: the sign-in screen goes straight to this provider (at most one).
+   ALTER TABLE auth_providers ADD COLUMN auto_redirect INTEGER NOT NULL DEFAULT 0`,
 ];
 
 /** Migrates forward; `until` stops after that many migrations, for tests of upgrades. */

@@ -572,6 +572,26 @@ describe("providers under Settings", () => {
     expect((await owner.json("/api/v1/auth/providers/env-sso", { method: "PATCH", body: { name: "x" } })).status).toBe(409);
   });
 
+  it("sends the sign-in screen straight to one provider, and refuses a second", async () => {
+    const methods = async () => (await app.browser().json<{ autoRedirect: string | null }>("/api/v1/auth/methods")).body.autoRedirect;
+    expect(await methods()).toBeNull();
+    const r = await add(owner, { ...keycloak(), autoRedirect: true });
+    expect(r.body).toMatchObject({ id: "keycloak", autoRedirect: true });
+    expect(await methods()).toBe("keycloak");
+    const other = await add(owner, { ...keycloak(), id: "second", autoRedirect: true });
+    expect(other.status).toBe(409);
+    expect(JSON.stringify(other.body)).toContain("already goes straight to Keycloak");
+    expect((await add(owner, { ...keycloak(), id: "second" })).status).toBe(201);
+    expect((await owner.json("/api/v1/auth/providers/second", { method: "PATCH", body: { autoRedirect: true } })).status).toBe(409);
+    expect((await owner.json("/api/v1/auth/providers/keycloak", { method: "PATCH", body: { autoRedirect: "yes" } })).status).toBe(422);
+    // Turned off, the provider is not on the sign-in screen, so nothing goes straight to it.
+    expect((await owner.json("/api/v1/auth/providers/keycloak", { method: "PATCH", body: { enabled: false } })).body).toMatchObject({ autoRedirect: true });
+    expect(await methods()).toBeNull();
+    expect((await owner.json("/api/v1/auth/providers/keycloak", { method: "PATCH", body: { enabled: true, autoRedirect: false } })).status).toBe(200);
+    expect((await owner.json("/api/v1/auth/providers/second", { method: "PATCH", body: { autoRedirect: true } })).status).toBe(200);
+    expect(await methods()).toBe("second");
+  });
+
   it("forgets who signed in through a provider when it is removed or points elsewhere", async () => {
     await add(owner, { ...keycloak(), roleMapping: {}, defaultRole: "viewer" });
     idp.next = { sub: "same-sub", email: "kim@example.com", email_verified: true };
@@ -719,22 +739,52 @@ describe("passwords another directory keeps", () => {
 describe("environment", () => {
   it("reads one OIDC provider with role mapping", async () => {
     const { oidcFromEnv } = await import("../src/env.ts");
-    expect(oidcFromEnv({}, "VULNS_")).toEqual([]);
-    const [p] = oidcFromEnv(
-      { VULNS_OIDC_ISSUER: "https://login.example.com", VULNS_OIDC_CLIENT_ID: "vulns", VULNS_OIDC_ROLE_MAPPING: "sec=admin, staff=viewer", VULNS_OIDC_ALLOWED_DOMAINS: "Example.com" },
-      "VULNS_",
-    );
+    expect(oidcFromEnv({})).toEqual([]);
+    const [p] = oidcFromEnv({ OPENASY_OIDC_ISSUER: "https://login.example.com", OPENASY_OIDC_CLIENT_ID: "vulns", OPENASY_OIDC_ROLE_MAPPING: "sec=admin, staff=viewer", OPENASY_OIDC_ALLOWED_DOMAINS: "Example.com" });
     expect(p).toMatchObject({ id: "sso", name: "SSO", roleMapping: { sec: "admin", staff: "viewer" }, allowedDomains: ["example.com"] });
-    expect(() => oidcFromEnv({ VULNS_OIDC_ISSUER: "https://x" }, "VULNS_")).toThrow(/CLIENT_ID/);
-    expect(() => oidcFromEnv({ VULNS_OIDC_ISSUER: "https://x", VULNS_OIDC_CLIENT_ID: "c", VULNS_OIDC_DEFAULT_ROLE: "god" }, "VULNS_")).toThrow(/not owner/);
+    expect(() => oidcFromEnv({ OPENASY_OIDC_ISSUER: "https://x" })).toThrow(/OPENASY_OIDC_CLIENT_ID/);
+    expect(() => oidcFromEnv({ OPENASY_OIDC_ISSUER: "https://x", OPENASY_OIDC_CLIENT_ID: "c", OPENASY_OIDC_DEFAULT_ROLE: "god" })).toThrow(/not owner/);
   });
 
   it("takes a provider's defaults from OIDC_PROVIDER, and the variables still win", async () => {
     const { oidcFromEnv } = await import("../src/env.ts");
-    const base = { VPN_OIDC_ISSUER: "https://okta.example.com", VPN_OIDC_CLIENT_ID: "vpn" };
-    expect(oidcFromEnv({ ...base, VPN_OIDC_PROVIDER: "okta" }, "VPN_")[0]).toMatchObject({ name: "Okta", scopes: ["openid", "email", "profile", "groups"], groupsClaim: "groups" });
-    expect(oidcFromEnv({ ...base, VPN_OIDC_PROVIDER: "keycloak", VPN_OIDC_NAME: "Ops", VPN_OIDC_GROUPS_CLAIM: "realm_access.roles" }, "VPN_")[0]).toMatchObject({ name: "Ops", groupsClaim: "realm_access.roles" });
-    expect(() => oidcFromEnv({ ...base, VPN_OIDC_PROVIDER: "myspace" }, "VPN_")).toThrow(/is not one of keycloak, entra/);
+    const base = { OPENASY_OIDC_ISSUER: "https://okta.example.com", OPENASY_OIDC_CLIENT_ID: "vpn" };
+    expect(oidcFromEnv({ ...base, OPENASY_OIDC_PROVIDER: "okta" })[0]).toMatchObject({ name: "Okta", scopes: ["openid", "email", "profile", "groups"], groupsClaim: "groups" });
+    expect(oidcFromEnv({ ...base, OPENASY_OIDC_PROVIDER: "keycloak", OPENASY_OIDC_NAME: "Ops", OPENASY_OIDC_GROUPS_CLAIM: "realm_access.roles" })[0]).toMatchObject({ name: "Ops", groupsClaim: "realm_access.roles" });
+    expect(() => oidcFromEnv({ ...base, OPENASY_OIDC_PROVIDER: "myspace" })).toThrow(/is not one of keycloak, entra/);
+  });
+
+  it("still reads the names with the product's prefix, warns, and lets the shared names win", async () => {
+    const { oidcFromEnv } = await import("../src/env.ts");
+    const warnings: string[] = [];
+    const listen = (w: Error) => warnings.push(w.message);
+    process.on("warning", listen);
+    try {
+      const [p] = oidcFromEnv({ VPN_OIDC_ISSUER: "https://old.example.com", VPN_OIDC_CLIENT_ID: "vpn", OPENASY_OIDC_ISSUER: "https://id.example.com", VPN_OIDC_ROLE_MAPPING: "ops=admin" }, "VPN_");
+      expect(p).toMatchObject({ issuer: "https://id.example.com", clientId: "vpn", roleMapping: { ops: "admin" } });
+      expect(oidcFromEnv({ VPN_OIDC_ISSUER: "https://old.example.com", VPN_OIDC_CLIENT_ID: "vpn" })).toEqual([]);
+      await new Promise((r) => setImmediate(r));
+      expect(warnings).toEqual(["Rename these variables, the old names go in a later release: VPN_OIDC_CLIENT_ID -> OPENASY_OIDC_CLIENT_ID, VPN_OIDC_ROLE_MAPPING -> OPENASY_OIDC_ROLE_MAPPING"]);
+    } finally {
+      process.off("warning", listen);
+    }
+  });
+
+  it("goes straight to the provider with OPENASY_OIDC_AUTO_REDIRECT", async () => {
+    const { oidcFromEnv } = await import("../src/env.ts");
+    const base = { OPENASY_OIDC_ISSUER: "https://id.example.com", OPENASY_OIDC_CLIENT_ID: "vpn" };
+    expect(oidcFromEnv(base)[0]!.autoRedirect).toBeUndefined();
+    expect(oidcFromEnv({ ...base, OPENASY_OIDC_AUTO_REDIRECT: "false" })[0]!.autoRedirect).toBeUndefined();
+    expect(oidcFromEnv({ ...base, OPENASY_OIDC_AUTO_REDIRECT: "true" })[0]!.autoRedirect).toBe(true);
+    expect(() => oidcFromEnv({ ...base, OPENASY_OIDC_AUTO_REDIRECT: "yes" })).toThrow(/true or false/);
+    expect(oidcFromEnv({ OPENASY_OIDC_AUTO_REDIRECT: "true" })).toEqual([]);
+
+    await app.close();
+    app = await startProduct({ secretsKey: randomBytes(32), oidc: [{ id: "sso", name: "Identity", issuer: "https://id.example.com", clientId: "c", autoRedirect: true }] });
+    const owner = await createOwner(app);
+    await addTotp(app, owner);
+    expect((await app.browser().json("/api/v1/auth/methods")).body).toMatchObject({ autoRedirect: "sso" });
+    expect((await owner.json("/api/v1/auth/providers", { body: { preset: "keycloak", id: "kc", issuer: "https://kc.example.com", clientId: "c", autoRedirect: true } })).status).toBe(409);
   });
 
   it("has setup steps with the redirect address for every preset", async () => {

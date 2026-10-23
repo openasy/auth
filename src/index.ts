@@ -155,6 +155,7 @@ interface ProviderRow {
   default_role: Role | null;
   allowed_domains: string;
   enabled: number;
+  auto_redirect: number;
   created_at: string;
   updated_at: string;
 }
@@ -505,6 +506,7 @@ export function createAuth(opts: AuthOptions) {
     defaultRole: r.default_role ?? undefined,
     allowedDomains: (JSON.parse(r.allowed_domains) as string[]).length ? (JSON.parse(r.allowed_domains) as string[]) : undefined,
     allowInsecure: opts.allowInsecureIssuers,
+    autoRedirect: r.auto_redirect === 1 || undefined,
   });
 
   /** Every provider people can sign in with now: the environment's first, then the enabled ones from Settings. */
@@ -547,6 +549,7 @@ export function createAuth(opts: AuthOptions) {
       roleMapping: p.roleMapping ?? {},
       defaultRole: p.defaultRole ?? null,
       allowedDomains: p.allowedDomains ?? [],
+      autoRedirect: !!p.autoRedirect,
       redirectUri: redirectUri(p.id),
       createdAt: row?.created_at ?? null,
       updatedAt: row?.updated_at ?? null,
@@ -604,6 +607,7 @@ export function createAuth(opts: AuthOptions) {
       defaultRole = b.defaultRole;
     }
     if (b.enabled !== undefined && typeof b.enabled !== "boolean") throw bad("enabled must be true or false.");
+    if (b.autoRedirect !== undefined && typeof b.autoRedirect !== "boolean") throw bad("autoRedirect must be true or false.");
     return {
       preset: pr.id,
       name: text("name", 64) ?? current?.name ?? pr.name,
@@ -616,7 +620,15 @@ export function createAuth(opts: AuthOptions) {
       defaultRole,
       allowedDomains,
       enabled: b.enabled === undefined ? (current ? current.enabled === 1 : true) : b.enabled,
+      autoRedirect: b.autoRedirect === undefined ? current?.auto_redirect === 1 : b.autoRedirect,
     };
+  }
+
+  /** Only one provider may take the sign-in screen: two would leave it to chance which one people end up at. */
+  function onlyAutoRedirect(id: string, autoRedirect: boolean) {
+    if (!autoRedirect) return;
+    const other = [...envProviders, ...providerRows().map(fromRow)].find((x) => x.autoRedirect && x.id !== id);
+    if (other) throw new AuthError(409, "conflict", `The sign-in screen already goes straight to ${other.name}. Turn that off first.`);
   }
 
   /** People linked to a provider stop being linked when it is removed or points elsewhere: the next provider's subjects are not theirs. */
@@ -655,7 +667,11 @@ export function createAuth(opts: AuthOptions) {
     {
       method: "GET",
       path: "/methods",
-      handle: () => ({ passwords, passkeys: true, users, providers: providers().map((p) => ({ id: p.id, name: p.name })), setupRequired: userCount() === 0 }),
+      handle: () => {
+        const all = providers();
+        const auto = all.filter((p) => p.autoRedirect);
+        return { passwords, passkeys: true, users, providers: all.map((p) => ({ id: p.id, name: p.name })), autoRedirect: auto.length === 1 ? auto[0]!.id : null, setupRequired: userCount() === 0 };
+      },
     },
 
     // First start: the one-time link printed in the log creates the owner (ADR 0013).
@@ -1196,9 +1212,10 @@ export function createAuth(opts: AuthOptions) {
         const id = b.id === undefined ? v.preset : b.id;
         if (typeof id !== "string" || !/^[a-z0-9-]{1,32}$/.test(id)) throw new AuthError(422, "invalid-body", "id must be lowercase letters, digits and dashes, up to 32.");
         if (envProviders.some((e) => e.id === id) || providerRow(id)) throw new AuthError(409, "conflict", `A provider with the id ${id} exists. Choose another id.`);
+        onlyAutoRedirect(id, v.autoRedirect);
         db.prepare(
-          "INSERT INTO auth_providers (id, preset, name, issuer, client_id, client_secret, scopes, groups_claim, role_mapping, default_role, allowed_domains, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        ).run(id, v.preset, v.name, v.issuer, v.clientId, v.clientSecret, JSON.stringify(v.scopes), v.groupsClaim, JSON.stringify(v.roleMapping), v.defaultRole, JSON.stringify(v.allowedDomains), v.enabled ? 1 : 0, iso(), iso());
+          "INSERT INTO auth_providers (id, preset, name, issuer, client_id, client_secret, scopes, groups_claim, role_mapping, default_role, allowed_domains, enabled, auto_redirect, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ).run(id, v.preset, v.name, v.issuer, v.clientId, v.clientSecret, JSON.stringify(v.scopes), v.groupsClaim, JSON.stringify(v.roleMapping), v.defaultRole, JSON.stringify(v.allowedDomains), v.enabled ? 1 : 0, v.autoRedirect ? 1 : 0, iso(), iso());
         // Sign-ins kept from an earlier provider with this id are not this one's.
         unlinkProvider(id);
         emit({ type: "provider-added", actor: p.user.id, target: id, ip: clientIp(req), detail: `${v.name} (${v.issuer})` });
@@ -1216,9 +1233,10 @@ export function createAuth(opts: AuthOptions) {
         const current = providerRow(id);
         if (!current) throw new AuthError(404, "not-found", "No such provider.");
         const v = providerInput(await body(), current);
+        onlyAutoRedirect(id, v.autoRedirect);
         db.prepare(
-          "UPDATE auth_providers SET name = ?, issuer = ?, client_id = ?, client_secret = ?, scopes = ?, groups_claim = ?, role_mapping = ?, default_role = ?, allowed_domains = ?, enabled = ?, updated_at = ? WHERE id = ?",
-        ).run(v.name, v.issuer, v.clientId, v.clientSecret, JSON.stringify(v.scopes), v.groupsClaim, JSON.stringify(v.roleMapping), v.defaultRole, JSON.stringify(v.allowedDomains), v.enabled ? 1 : 0, iso(), id);
+          "UPDATE auth_providers SET name = ?, issuer = ?, client_id = ?, client_secret = ?, scopes = ?, groups_claim = ?, role_mapping = ?, default_role = ?, allowed_domains = ?, enabled = ?, auto_redirect = ?, updated_at = ? WHERE id = ?",
+        ).run(v.name, v.issuer, v.clientId, v.clientSecret, JSON.stringify(v.scopes), v.groupsClaim, JSON.stringify(v.roleMapping), v.defaultRole, JSON.stringify(v.allowedDomains), v.enabled ? 1 : 0, v.autoRedirect ? 1 : 0, iso(), id);
         if (v.issuer !== current.issuer) unlinkProvider(id);
         oidc.forget(id);
         emit({ type: "provider-updated", actor: p.user.id, target: id, ip: clientIp(req), detail: v.issuer !== current.issuer ? `issuer ${current.issuer} -> ${v.issuer}` : undefined });

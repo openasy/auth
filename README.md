@@ -64,7 +64,7 @@ The OIDC redirect URI to register at the provider is `<origin>/api/v1/auth/oidc/
 
 `PRESETS` (also at `@openasy/auth/presets`, without Node imports, for screens) holds the name, scopes, groups claim
 and setup steps for Keycloak, Microsoft Entra ID, Okta, Google, authentik, ZITADEL and OpenAsy Identity. In the
-environment, `<P>OIDC_PROVIDER=keycloak` makes them the defaults; the other variables still win.
+environment, `OPENASY_OIDC_PROVIDER=keycloak` makes them the defaults; the other variables still win.
 
 - **Groups** are read from the ID token, or from userinfo when the token has none. `groupsClaim` is a claim name or a
   dotted path into nested claims: `realm_access.roles` for Keycloak realm roles. A list, one name, or an object whose
@@ -81,12 +81,34 @@ environment, `<P>OIDC_PROVIDER=keycloak` makes them the defaults; the other vari
   (`factor`), so a product can ask for a passkey.
 - **Groups for the product:** `onOidcSignIn({ userId, provider, groups })` runs after each sign-in through a
   provider, so a product can keep the groups; Identity does.
+- **Straight to the provider:** `autoRedirect` on a provider, `OPENASY_OIDC_AUTO_REDIRECT=true` in the environment
+  or the switch under Settings, Sign-in, makes the sign-in screen
+  open that provider instead of the product's form. With a session there already, people land in the product without
+  seeing a screen. It does not happen after signing out, after a failed sign-in, or with `?local=1` in the address,
+  which is how an owner signs in while the provider is down. At most one provider has it.
 - **Too many groups:** Microsoft Entra ID leaves the groups out of a token when there are too many. With a role
   mapping, the person is refused with what to change, rather than given the wrong role.
 
 The OpenAPI description of the routes is `authOpenApi()`; serve `mergeOpenApi(yourSpec)` so your API reference includes
-sign-in. `test/contract.test.ts` checks every response against it. Each product can read one OIDC provider from its
-environment with `oidcFromEnv(process.env, "VULNS_")` and the secrets key with `readSecretsKey(path)`.
+sign-in. `test/contract.test.ts` checks every response against it. Each product reads the secrets key with
+`readSecretsKey(path)` and one OIDC provider from its environment with `oidcFromEnv(process.env, "VULNS_")`. The
+variables have the same names in every product, like `OPENASY_PRODUCTS`, so an install sets them once; only the
+client differs, because each product is its own application at the provider:
+
+| Variable | |
+| --- | --- |
+| `OPENASY_OIDC_ISSUER`, `OPENASY_OIDC_CLIENT_ID`, `OPENASY_OIDC_CLIENT_SECRET` | Required to turn it on. The client is this product's |
+| `OPENASY_OIDC_PROVIDER` | `keycloak`, `entra`, `okta`, `google`, `authentik`, `zitadel` or `openasy-identity`: that provider's defaults |
+| `OPENASY_OIDC_NAME` | On the button: "Continue with ...". Default `SSO` |
+| `OPENASY_OIDC_SCOPES` | Default `openid email profile`; add the scope that carries groups |
+| `OPENASY_OIDC_GROUPS_CLAIM` | Default `groups`; a dotted path such as `realm_access.roles` reads nested claims |
+| `OPENASY_OIDC_ROLE_MAPPING` | `openasy-admins=admin,staff=viewer`: the role follows the groups on every sign-in |
+| `OPENASY_OIDC_DEFAULT_ROLE` | Role for people nobody invited. Unset: only invited people and mapped groups get in |
+| `OPENASY_OIDC_ALLOWED_DOMAINS` | Comma-separated email domains, for providers anyone can join (Google) |
+| `OPENASY_OIDC_AUTO_REDIRECT` | `true`: the sign-in page opens the provider straight away |
+
+Before 0.5.0 the names had the product's prefix (`VULNS_OIDC_ISSUER`). The second argument still reads those when the
+shared name is unset, with a deprecation warning; a later release drops them.
 
 ```tsx
 import { AuthGate, AccountSettings, MembersSettings, SignInSettings, TokensSettings, useAuth } from "@openasy/auth/react";

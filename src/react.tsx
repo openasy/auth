@@ -4,7 +4,7 @@ import { Badge, Button, Callout, Panel, SelectField, Switch, TextField, useBrand
 import { ArrowLeft, Copy, Download, Fingerprint, KeyRound, LogIn, Pencil, Plus, ShieldCheck, Smartphone, Trash2 } from "lucide-react";
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ClipboardEvent, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { encode } from "uqr";
-import { auth, AuthApiError, passkeysSupported, takeAuthParams, type ApiToken, type Me, type Member, type Methods, type Provider, type ProviderChange, type Role, type Session } from "./client.ts";
+import { auth, AuthApiError, passkeysSupported, signedOut, takeAuthParams, type ApiToken, type Me, type Member, type Methods, type Provider, type ProviderChange, type Role, type Session } from "./client.ts";
 import { PRESETS } from "./presets.ts";
 
 export { auth, AuthApiError, type Me, type Member, type Provider, type Role } from "./client.ts";
@@ -566,7 +566,9 @@ type Stage =
   | { k: "setup"; token: string }
   | { k: "setup-pending" }
   | { k: "link"; token: string }
-  | { k: "sign-in"; error?: string }
+  // `manual`: the person is choosing how to sign in here, so the screen does not go straight to a provider.
+  // `expired`: the error is a session that ended, which a provider whose own session still runs fixes at once.
+  | { k: "sign-in"; error?: string; manual?: boolean; expired?: boolean }
   | { k: "mfa"; methods: string[] }
   | { k: "mfa-setup"; me: Me }
   | { k: "in"; me: Me };
@@ -574,7 +576,8 @@ type Stage =
 /**
  * Shows the product only to signed-in people: first-start setup, invitations and password links, sign-in with a
  * password, passkey or identity provider, the second step, and setting up a second factor when an owner or admin
- * has none. Inside, `useAuth()` gives the person and their role.
+ * has none. With a provider set to go straight to, the sign-in screen is that provider's, except after signing out,
+ * after a failed sign-in and with ?local=1. Inside, `useAuth()` gives the person and their role.
  */
 export function AuthGate({ children, product }: { children: ReactNode; /** The product's name, as in "Sign in to OpenAsy Vulnerabilities". */ product?: string }) {
   return (
@@ -589,10 +592,12 @@ function Gate({ children }: { children: ReactNode }) {
   const [stage, setStage] = useState<Stage>({ k: "loading" });
   const [methods, setMethods] = useState<Methods>();
   const [loadError, setLoadError] = useState<string>();
+  const [local, setLocal] = useState(false);
 
   const load = useCallback(async (error?: string) => {
     try {
       const me = await auth.me();
+      signedOut.set(false);
       setStage(me.mfaSetupRequired ? { k: "mfa-setup", me } : { k: "in", me });
     } catch (err) {
       if (!(err instanceof AuthApiError) || err.status !== 401) throw err;
@@ -604,6 +609,7 @@ function Gate({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const params = takeAuthParams();
+    setLocal(params.local);
     auth.methods().then(
       (m) => {
         setMethods(m);
@@ -617,10 +623,17 @@ function Gate({ children }: { children: ReactNode }) {
 
   const signOut = useCallback(async () => {
     await auth.signOut().catch(() => {});
-    setStage({ k: "sign-in" });
+    signedOut.set(true);
+    setStage({ k: "sign-in", manual: true });
   }, []);
   const reload = useCallback(() => load().catch((err: unknown) => setLoadError(message(err))), [load]);
   const onInvalidLink = useCallback((error: string) => setStage({ k: "sign-in", error }), []);
+
+  const straightTo =
+    stage.k === "sign-in" && !stage.manual && (!stage.error || stage.expired) && !local && !signedOut.get() ? methods?.providers.find((p) => p.id === methods.autoRedirect) : undefined;
+  useEffect(() => {
+    if (straightTo) auth.signInWith(straightTo.id);
+  }, [straightTo]);
 
   if (loadError) {
     return (
@@ -640,9 +653,18 @@ function Gate({ children }: { children: ReactNode }) {
     case "link":
       return <PasswordLink token={stage.token} onDone={reload} onInvalid={onInvalidLink} />;
     case "sign-in":
+      if (straightTo) {
+        return (
+          <AuthLayout>
+            <p role="status" className="text-center text-sm text-fg-muted">
+              Signing in through {straightTo.name}…
+            </p>
+          </AuthLayout>
+        );
+      }
       return <SignIn methods={methods!} initialError={stage.error} onSignedIn={reload} onMfa={(m) => setStage({ k: "mfa", methods: m })} />;
     case "mfa":
-      return <MfaStep methods={stage.methods} onSignedIn={reload} onBack={() => setStage({ k: "sign-in" })} />;
+      return <MfaStep methods={stage.methods} onSignedIn={reload} onBack={() => setStage({ k: "sign-in", manual: true })} />;
     case "mfa-setup":
       return <MfaSetup productName={name} onDone={reload} onSignOut={signOut} />;
     case "in":
@@ -654,7 +676,7 @@ function Gate({ children }: { children: ReactNode }) {
             can: (role) => RANK.indexOf(stage.me.user.role) >= RANK.indexOf(role),
             refresh: reload,
             signOut,
-            expired: () => setStage({ k: "sign-in", error: "Your session ended. Sign in again." }),
+            expired: () => setStage({ k: "sign-in", error: "Your session ended. Sign in again.", expired: true }),
           }}
         >
           {children}
@@ -1148,6 +1170,7 @@ function ProviderForm({ editing, template, onSaved, onCancel }: { editing?: Prov
   const [defaultRole, setDefaultRole] = useState<Role | "">(editing?.defaultRole ?? "");
   const [domains, setDomains] = useState(editing?.allowedDomains.join(", ") ?? "");
   const [enabled, setEnabled] = useState(editing?.enabled ?? true);
+  const [autoRedirect, setAutoRedirect] = useState(editing?.autoRedirect ?? false);
   const [check, setCheck] = useState<{ ok: boolean; text: string }>();
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
@@ -1185,6 +1208,7 @@ function ProviderForm({ editing, template, onSaved, onCancel }: { editing?: Prov
           .map((d) => d.trim())
           .filter(Boolean),
         enabled,
+        autoRedirect,
         ...(clientSecret && { clientSecret }),
       };
       if (editing) await auth.updateProvider(editing.id, body);
@@ -1272,6 +1296,12 @@ function ProviderForm({ editing, template, onSaved, onCancel }: { editing?: Prov
           <TextField label="Allowed email domains" placeholder="example.com" hint="Comma-separated. For providers where anyone can have an account, such as Google." value={domains} onChange={(e) => setDomains(e.target.value)} />
         </div>
         <Switch checked={enabled} onCheckedChange={setEnabled} label="Show on the sign-in page" description="Turned off, nobody can sign in through it, and its settings are kept." />
+        <Switch
+          checked={autoRedirect}
+          onCheckedChange={setAutoRedirect}
+          label="Go straight to this provider"
+          description="The sign-in page opens the provider instead of this product's own form, except after signing out. Add ?local=1 to the address to see the form."
+        />
         <Problem error={error} title="Not saved" />
         <span className="flex gap-2">
           <Button type="submit" variant="primary" loading={busy} disabled={!issuer.trim() || !clientId.trim()}>
@@ -1346,7 +1376,10 @@ export function SignInSettings() {
                       : "Invited people only"}
                 </Cell>
                 <Cell>
-                  {p.source === "environment" ? <Badge tone="neutral">Environment</Badge> : <Badge tone={p.enabled ? "success" : "neutral"}>{p.enabled ? "On" : "Off"}</Badge>}
+                  <span className="flex gap-1 whitespace-nowrap">
+                    {p.source === "environment" ? <Badge tone="neutral">Environment</Badge> : <Badge tone={p.enabled ? "success" : "neutral"}>{p.enabled ? "On" : "Off"}</Badge>}
+                    {p.autoRedirect && <Badge tone="neutral">Straight to</Badge>}
+                  </span>
                 </Cell>
                 <Cell>
                   {isOwner && p.source === "settings" && (

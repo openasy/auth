@@ -28,6 +28,11 @@ export interface OidcProvider {
   allowedDomains?: string[];
   /** For tests and local IdPs only: allow an http:// issuer. */
   allowInsecure?: boolean;
+  /**
+   * The sign-in screen goes straight to this provider instead of showing its form, except after signing out, after a
+   * failed sign-in, and with ?local=1. Only one provider may have it.
+   */
+  autoRedirect?: boolean;
 }
 
 export interface OidcClaims {

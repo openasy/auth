@@ -44,6 +44,7 @@ const schemas: Record<string, Schema> = {
     passkeys: { type: "boolean" },
     users: { type: "boolean", description: "Members may have the user role." },
     providers: { type: "array", items: obj({ id: str, name: str }) },
+    autoRedirect: nullable({ type: "string", description: "The provider the sign-in screen goes straight to, or null to show the screen." }),
     setupRequired: { type: "boolean", description: "No owner yet: open the setup link from the log." },
   }),
   AuthMember: obj({
@@ -99,6 +100,7 @@ const schemas: Record<string, Schema> = {
     roleMapping: { type: "object", additionalProperties: role },
     defaultRole: nullable(role),
     allowedDomains: { type: "array", items: str },
+    autoRedirect: { type: "boolean", description: "The sign-in screen goes straight to this provider. At most one has it." },
     redirectUri: { type: "string", format: "uri", description: "Register this at the provider." },
     createdAt: nullable(dateTime),
     updatedAt: nullable(dateTime),
@@ -117,6 +119,7 @@ const schemas: Record<string, Schema> = {
       defaultRole: nullable(role),
       allowedDomains: { type: "array", items: str },
       enabled: { type: "boolean" },
+      autoRedirect: { type: "boolean", description: "The sign-in screen goes straight to this provider. Refused while another has it." },
     },
     [],
   ),

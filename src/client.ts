@@ -11,6 +11,8 @@ export interface Methods {
   /** Members may have the user role (Identity's directory). */
   users: boolean;
   providers: Array<{ id: string; name: string }>;
+  /** The provider the sign-in screen goes straight to, or null to show the screen. */
+  autoRedirect: string | null;
   setupRequired: boolean;
 }
 
@@ -78,6 +80,7 @@ export interface Provider {
   roleMapping: Record<string, Role>;
   defaultRole: Role | null;
   allowedDomains: string[];
+  autoRedirect: boolean;
   redirectUri: string;
   createdAt: string | null;
   updatedAt: string | null;
@@ -97,6 +100,7 @@ export interface ProviderChange {
   defaultRole?: Role | null;
   allowedDomains?: string[];
   enabled?: boolean;
+  autoRedirect?: boolean;
 }
 
 export class AuthApiError extends Error {
@@ -190,14 +194,39 @@ export const auth = {
 
 /**
  * Reads and removes `?setup=`, `?link=` and `?auth_error=` from the address bar, so one-time tokens do not stay in
- * history or get copied along with the URL.
+ * history or get copied along with the URL. `?local=1` stays: it asks for this product's own sign-in screen rather
+ * than the provider it would go straight to, and a reload should keep asking.
  */
-export function takeAuthParams(): { setup?: string; link?: string; error?: string } {
+export function takeAuthParams(): { setup?: string; link?: string; error?: string; local: boolean } {
   const url = new URL(location.href);
-  const out = { setup: url.searchParams.get("setup") ?? undefined, link: url.searchParams.get("link") ?? undefined, error: url.searchParams.get("auth_error") ?? undefined };
+  const out = { setup: url.searchParams.get("setup") ?? undefined, link: url.searchParams.get("link") ?? undefined, error: url.searchParams.get("auth_error") ?? undefined, local: url.searchParams.has("local") };
   if (out.setup || out.link || out.error) {
     for (const k of ["setup", "link", "auth_error"]) url.searchParams.delete(k);
     history.replaceState(history.state, "", url.pathname + url.search + url.hash);
   }
   return out;
 }
+
+const SIGNED_OUT = "openasy-auth-signed-out";
+
+/**
+ * Whether this tab signed out, so the sign-in screen does not go straight back to a provider whose own session would
+ * sign the person in again. Kept for the tab in sessionStorage; storage that throws counts as not signed out.
+ */
+export const signedOut = {
+  get: () => {
+    try {
+      return sessionStorage.getItem(SIGNED_OUT) === "1";
+    } catch {
+      return false;
+    }
+  },
+  set: (value: boolean) => {
+    try {
+      if (value) sessionStorage.setItem(SIGNED_OUT, "1");
+      else sessionStorage.removeItem(SIGNED_OUT);
+    } catch {
+      // Without storage the screen still shows after signing out in this page; only a reload may go to the provider.
+    }
+  },
+};

@@ -1,5 +1,5 @@
 // Settings for the identity providers people use most (ADR 0033). Products use them in Settings → Sign-in and in
-// <P>OIDC_PROVIDER, and Identity for its upstream providers, so every place gives the same help. No Node imports:
+// OPENASY_OIDC_PROVIDER, and Identity for its upstream providers, so every place gives the same help. No Node imports:
 // the React screens use this file too.
 
 export interface ProviderPreset {
