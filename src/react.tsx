@@ -1,6 +1,6 @@
 // Screens for @openasy/auth, built from @openasy/ui: the sign-in gate around a product's UI, and the Account, Members
 // and API tokens settings. They follow the Identity/Sign-in stories in the ui Storybook.
-import { Badge, Button, Callout, defineMessages, Panel, SelectField, Switch, TextField, useBrand } from "@openasy/ui";
+import { Badge, Button, Callout, defineMessages, Panel, SelectField, Switch, TextField, useBrand, type Brand } from "@openasy/ui";
 import { ArrowLeft, Copy, Download, Fingerprint, KeyRound, LogIn, Pencil, Plus, ShieldCheck, Smartphone, Trash2 } from "lucide-react";
 import {
   createContext,
@@ -67,6 +67,42 @@ function useProductName() {
   const product = useContext(ProductContext);
   const { brand } = useBrand();
   return product ?? brand.name;
+}
+
+/**
+ * The install's brand (ADR 0053) for BrandProvider, from the product's own server: the organization, the color and the
+ * logo, which also becomes the tab's icon. Empty until it is read, and when the install sets none:
+ *
+ *   const installBrand = useInstallBrand();
+ *   <BrandProvider brand={{ name: "OpenAsy", organization: undefined, ...installBrand }}>
+ */
+export function useInstallBrand(): Partial<Brand> {
+  const [brand, setBrand] = useState<Partial<Brand>>({});
+  useEffect(() => {
+    let live = true;
+    auth
+      .methods()
+      .then(({ brand: b }) => {
+        if (!live || !b) return;
+        setBrand({
+          ...(b.organization && { organization: b.organization }),
+          ...(b.accent && { accent: b.accent }),
+          ...(b.logo && { logoUrl: b.logo }),
+        });
+        if (b.logo) {
+          const icon = document.querySelector<HTMLLinkElement>("link[rel~='icon']") ?? document.head.appendChild(document.createElement("link"));
+          icon.rel = "icon";
+          icon.removeAttribute("type");
+          icon.href = b.logo;
+        }
+      })
+      // Without the brand the product keeps its own look; the sign-in screen says what is wrong with the server.
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, []);
+  return brand;
 }
 
 export function useAuth(): AuthContextValue {

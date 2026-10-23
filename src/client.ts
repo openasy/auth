@@ -14,6 +14,8 @@ export interface Methods {
   /** The provider the sign-in screen goes straight to, or null to show the screen. */
   autoRedirect: string | null;
   setupRequired: boolean;
+  /** The install's brand (ADR 0053); null where it is not set. */
+  brand: { organization: string | null; accent: string | null; logo: string | null };
 }
 
 export interface Member {

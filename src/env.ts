@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import type { OidcProvider } from "./oidc.ts";
 import { PRESETS, preset } from "./presets.ts";
@@ -90,4 +91,57 @@ export function readSecretsKey(path: string): Buffer | undefined {
   const key = raw.length === 32 ? raw : /^[0-9a-f]{64}$/i.test(text) ? Buffer.from(text, "hex") : Buffer.from(text, "base64");
   if (key.length !== 32) throw new Error(`${path} must hold a 32-byte key (raw, 64 hex characters or base64); generate one with: openssl rand -hex 32`);
   return key;
+}
+
+/** The install's brand (ADR 0053), the same in every product: shown under the product's name, on buttons and links. */
+export interface BrandSettings {
+  organization?: string;
+  /** #rrggbb. */
+  accent?: string;
+  /** The picture, read once at start and served from the product's own address. */
+  logo?: { body: Buffer; type: "image/svg+xml" | "image/png" | "image/webp"; etag: string };
+}
+
+const LOGO_MAX = 512 * 1024;
+
+/** What a picture is, from its first bytes rather than its name: SVG, PNG or WebP, or undefined. */
+function logoType(body: Buffer): NonNullable<BrandSettings["logo"]>["type"] | undefined {
+  if (body.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
+  if (body.subarray(0, 4).toString("latin1") === "RIFF" && body.subarray(8, 12).toString("latin1") === "WEBP") return "image/webp";
+  if (/<svg[\s>]/i.test(body.subarray(0, 4096).toString("utf8"))) return "image/svg+xml";
+  return undefined;
+}
+
+/**
+ * The brand from OPENASY_ORGANIZATION, OPENASY_ACCENT and OPENASY_LOGO, which the install keeps in config/brand.env.
+ * A setting that cannot be used is left out with a warning: the product starts with its own look instead.
+ */
+export function brandFromEnv(env: Record<string, string | undefined>): BrandSettings {
+  const brand: BrandSettings = {};
+  const warn = (message: string) => process.emitWarning(message, { code: "OPENASY_BRAND" });
+  const organization = env.OPENASY_ORGANIZATION?.trim();
+  if (organization) {
+    if (organization.length > 80) warn("OPENASY_ORGANIZATION is longer than 80 characters; it is left out.");
+    else brand.organization = organization;
+  }
+  const accent = env.OPENASY_ACCENT?.trim();
+  if (accent) {
+    if (/^#[0-9a-f]{6}$/i.test(accent)) brand.accent = accent.toLowerCase();
+    else warn(`OPENASY_ACCENT is a color such as #0a66c2, not "${accent}"; it is left out.`);
+  }
+  const logo = env.OPENASY_LOGO?.trim();
+  if (logo) {
+    if (/^[a-z]+:\/\//i.test(logo)) {
+      warn(`OPENASY_LOGO is a file mounted into the container, such as /config/logo.svg, not an address; it is left out.`);
+    } else if (!existsSync(logo)) {
+      warn(`OPENASY_LOGO: ${logo} is not in the container; mount it there. It is left out.`);
+    } else {
+      const body = readFileSync(logo);
+      const type = logoType(body);
+      if (body.length > LOGO_MAX) warn(`OPENASY_LOGO: ${logo} is larger than 512 KB; it is left out.`);
+      else if (!type) warn(`OPENASY_LOGO: ${logo} is not an SVG, PNG or WebP picture; it is left out.`);
+      else brand.logo = { body, type, etag: createHash("sha256").update(body).digest("base64url").slice(0, 16) };
+    }
+  }
+  return brand;
 }

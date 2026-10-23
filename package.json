@@ -1,6 +1,6 @@
 {
   "name": "@openasy/auth",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Sign-in shared by every OpenAsy product: local accounts, MFA (TOTP and passkeys), OIDC, sessions, members and scoped API tokens.",
   "license": "Apache-2.0",
   "type": "module",

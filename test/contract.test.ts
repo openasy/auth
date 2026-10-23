@@ -30,6 +30,8 @@ async function check(b: Browser, method: string, path: string, concrete = path, 
   }
   const type = res.headers.get("content-type")!.split(";")[0]!;
   expect((response.content as Record<string, unknown>)[type], `${method} ${path} ${res.status} sent ${type}`).toBeDefined();
+  // A picture is checked by its type alone.
+  if (type.startsWith("image/")) return { status: res.status, body: undefined as never, headers: res.headers };
   const data = await res.json();
   const validate = ajv.getSchema(`${at}/content/${type.replace("/", "~1")}/schema`)!;
   expect(validate(data), `${method} ${concrete} ${res.status}: ${JSON.stringify(validate.errors)}`).toBe(true);
@@ -54,6 +56,20 @@ describe("/api/v1/auth matches its OpenAPI description", () => {
   it("first start, sign-in and the second step", async () => {
     const anon = app.browser();
     await check(anon, "GET", "/api/v1/auth/methods");
+    expect((await check(anon, "GET", "/api/v1/auth/brand/logo")).status).toBe(404);
+    const branded = await startProduct({
+      brand: { organization: "Acme", accent: "#c30193", logo: { body: Buffer.from("<svg/>"), type: "image/svg+xml", etag: "abc" } },
+    });
+    try {
+      expect((await check(branded.browser(), "GET", "/api/v1/auth/methods")).body.brand).toEqual({
+        organization: "Acme",
+        accent: "#c30193",
+        logo: "/api/v1/auth/brand/logo?v=abc",
+      });
+      expect((await check(branded.browser(), "GET", "/api/v1/auth/brand/logo", "/api/v1/auth/brand/logo?v=abc")).status).toBe(200);
+    } finally {
+      await branded.close();
+    }
     await check(anon, "POST", "/api/v1/auth/setup", undefined, { token: "wrong", name: "O", email: "o@example.com", password: PASSWORD });
     await check(anon, "POST", "/api/v1/auth/login", undefined, { email: "nobody@example.com", password: "x" });
     await check(anon, "GET", "/api/v1/auth/me");

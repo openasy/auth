@@ -24,7 +24,8 @@ import {
   verifyPassword,
 } from "./crypto.ts";
 import { migrate } from "./db.ts";
-import { AuthError, clientIp, cookie, email as readEmail, parseCookies, readJson, sendJson, sendProblem, str } from "./http.ts";
+import { brandFromEnv, type BrandSettings } from "./env.ts";
+import { AuthError, clientIp, cookie, email as readEmail, parseCookies, readJson, SECURITY_HEADERS, sendJson, sendProblem, str } from "./http.ts";
 import { createOidc, validateProvider, type OidcClaims, type OidcProvider } from "./oidc.ts";
 import { PRESETS, preset as findPreset } from "./presets.ts";
 import { atLeast, highest, isRole, needsMfa, type Role } from "./roles.ts";
@@ -33,7 +34,7 @@ export { AuthError, sendProblem, type AuthProblem } from "./http.ts";
 export { ROLES, atLeast, type Role } from "./roles.ts";
 export type { OidcProvider } from "./oidc.ts";
 export { PRESETS, preset, type ProviderPreset } from "./presets.ts";
-export { oidcFromEnv, readSecretsKey } from "./env.ts";
+export { brandFromEnv, oidcFromEnv, readSecretsKey, type BrandSettings } from "./env.ts";
 export { authOpenApi, mergeOpenApi } from "./openapi.ts";
 
 export interface AuthOptions {
@@ -81,6 +82,8 @@ export interface AuthOptions {
   links?: { setup?: (token: string) => string; password?: (token: string) => string; signIn?: (error?: string) => string };
   /** Every sign-in, failure and change to people or tokens, for the audit log (ADR 0013). */
   onEvent?: (event: AuthEvent) => void;
+  /** The install's brand (ADR 0053); read from OPENASY_ORGANIZATION, OPENASY_ACCENT and OPENASY_LOGO when not given. */
+  brand?: BrandSettings;
   /** For tests. */
   now?: () => number;
 }
@@ -193,6 +196,9 @@ export function createAuth(opts: AuthOptions) {
   /** A role this product accepts: user only where `users` is on. */
   const roleAllowed = (r: unknown): r is Role => isRole(r) && (r !== "user" || users);
   const roleList = users ? "owner, admin, editor, viewer or user" : "owner, admin, editor or viewer";
+  const brand = opts.brand ?? brandFromEnv(process.env);
+  // The logo's address names its content, so a browser may keep it for a year and fetches a new one when it changes.
+  const logoUrl = brand.logo ? `${PREFIX}/brand/logo?v=${brand.logo.etag}` : null;
   const envProviders = opts.oidc ?? [];
   envProviders.forEach(validateProvider);
   for (const p of envProviders) {
@@ -745,7 +751,27 @@ export function createAuth(opts: AuthOptions) {
           providers: all.map((p) => ({ id: p.id, name: p.name })),
           autoRedirect: auto.length === 1 ? auto[0]!.id : null,
           setupRequired: userCount() === 0,
+          brand: { organization: brand.organization ?? null, accent: brand.accent ?? null, logo: logoUrl },
         };
+      },
+    },
+    // The brand's logo, from this product's own address, so the page never loads a picture from elsewhere (ADR 0053).
+    {
+      method: "GET",
+      path: "/brand/logo",
+      handle: ({ res }) => {
+        if (!brand.logo) throw new AuthError(404, "not-found", "No logo: OPENASY_LOGO is not set.");
+        res
+          .writeHead(200, {
+            ...SECURITY_HEADERS,
+            "content-type": brand.logo.type,
+            "content-length": brand.logo.body.length,
+            "cache-control": "public, max-age=31536000, immutable",
+            // An SVG may hold script: sandboxed, it never runs, even when the picture is opened on its own.
+            "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+            etag: `"${brand.logo.etag}"`,
+          })
+          .end(brand.logo.body);
       },
     },
 

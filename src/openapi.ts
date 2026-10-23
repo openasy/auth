@@ -50,6 +50,11 @@ const schemas: Record<string, Schema> = {
     providers: { type: "array", items: obj({ id: str, name: str }) },
     autoRedirect: nullable({ type: "string", description: "The provider the sign-in screen goes straight to, or null to show the screen." }),
     setupRequired: { type: "boolean", description: "No owner yet: open the setup link from the log." },
+    brand: obj({
+      organization: nullable({ type: "string", description: "Shown under the product's name (OPENASY_ORGANIZATION)." }),
+      accent: nullable({ type: "string", pattern: "^#[0-9a-f]{6}$", description: "Buttons and links (OPENASY_ACCENT)." }),
+      logo: nullable({ type: "string", description: "The logo's path on this product, which changes with the picture (OPENASY_LOGO)." }),
+    }),
   }),
   AuthMember: obj({
     id: str,
@@ -246,6 +251,21 @@ const paths = {
       security: anyone,
       body: obj({ response: { type: "object" } }),
       responses: { "200": json(ref("AuthSignedIn")), ...problems(...unsafe, 401) },
+    }),
+  },
+  "/api/v1/auth/brand/logo": {
+    get: op({
+      operationId: "authBrandLogo",
+      summary: "The brand's logo",
+      description: "The picture OPENASY_LOGO names (ADR 0053), kept for a year: its address changes with it. An SVG is sandboxed.",
+      security: anyone,
+      responses: {
+        "200": {
+          description: "The logo",
+          content: Object.fromEntries(["image/svg+xml", "image/png", "image/webp"].map((t) => [t, { schema: { type: "string", format: "binary" } }])),
+        },
+        ...problems(404),
+      },
     }),
   },
   "/api/v1/auth/oidc/{id}/start": {

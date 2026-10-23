@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { randomBytes } from "node:crypto";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { brandFromEnv } from "../src/env.ts";
 import { hashPassword, matchTotp, recoveryCodes, sealer, totp, verifyPassword } from "../src/crypto.ts";
 import { addTotp, codeAt, createOwner, invite, oidcSignIn, PASSWORD, SoftPasskey, startIdp, startProduct, type Browser } from "./helpers.ts";
 
@@ -936,5 +940,67 @@ describe("device binding", () => {
     // Ended for good, also back on the original browser.
     expect((await b.json("/api/v1/needs/viewer", { headers: ua("131.0.6778.86") })).status).toBe(401);
     expect(app.events.some((e) => e.type === "session-ended")).toBe(true);
+  });
+});
+
+describe("the install's brand (ADR 0053)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "brand-"));
+  const file = (name: string, body: string | Buffer) => (writeFileSync(join(dir, name), body), join(dir, name));
+  const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]);
+  const warnings: string[] = [];
+  const onWarning = (w: Error) => warnings.push(w.message);
+  beforeEach(() => {
+    warnings.length = 0;
+    process.on("warning", onWarning);
+  });
+  afterEach(() => {
+    process.off("warning", onWarning);
+  });
+  const settled = () => new Promise((r) => setImmediate(r));
+
+  it("reads the organization, the color and a mounted picture, by what it is rather than its name", () => {
+    const b = brandFromEnv({ OPENASY_ORGANIZATION: " Test IQ ", OPENASY_ACCENT: "#C30193", OPENASY_LOGO: file("logo.svg", PNG) });
+    expect(b).toMatchObject({ organization: "Test IQ", accent: "#c30193", logo: { type: "image/png" } });
+    expect(brandFromEnv({ OPENASY_LOGO: file("mark.svg", '<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"/>') }).logo?.type).toBe("image/svg+xml");
+    expect(brandFromEnv({})).toEqual({});
+  });
+
+  it("leaves out what it cannot use, and says why", async () => {
+    const b = brandFromEnv({
+      OPENASY_ORGANIZATION: "x".repeat(81),
+      OPENASY_ACCENT: "pink",
+      OPENASY_LOGO: "https://example.com/logo.png",
+    });
+    expect(b).toEqual({});
+    expect(brandFromEnv({ OPENASY_LOGO: join(dir, "missing.svg") })).toEqual({});
+    expect(brandFromEnv({ OPENASY_LOGO: file("notes.txt", "hello") })).toEqual({});
+    expect(brandFromEnv({ OPENASY_LOGO: file("big.png", Buffer.concat([PNG, Buffer.alloc(512 * 1024)])) })).toEqual({});
+    await settled();
+    expect(warnings).toEqual([
+      "OPENASY_ORGANIZATION is longer than 80 characters; it is left out.",
+      'OPENASY_ACCENT is a color such as #0a66c2, not "pink"; it is left out.',
+      "OPENASY_LOGO is a file mounted into the container, such as /config/logo.svg, not an address; it is left out.",
+      `OPENASY_LOGO: ${join(dir, "missing.svg")} is not in the container; mount it there. It is left out.`,
+      `OPENASY_LOGO: ${join(dir, "notes.txt")} is not an SVG, PNG or WebP picture; it is left out.`,
+      `OPENASY_LOGO: ${join(dir, "big.png")} is larger than 512 KB; it is left out.`,
+    ]);
+  });
+
+  it("serves the logo from the product, kept for a year, and an SVG sandboxed", async () => {
+    const brand = brandFromEnv({ OPENASY_LOGO: file("logo.svg", "<svg><script>alert(1)</script></svg>") });
+    const app = await startProduct({ brand });
+    try {
+      const { brand: sent } = (await app.browser().json<{ brand: { logo: string } }>("/api/v1/auth/methods")).body;
+      expect(sent).toEqual({ organization: null, accent: null, logo: `/api/v1/auth/brand/logo?v=${brand.logo!.etag}` });
+      const res = await fetch(app.origin + sent.logo);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toBe("image/svg+xml");
+      expect(res.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+      expect(res.headers.get("content-security-policy")).toContain("sandbox");
+      expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+      expect(await res.text()).toContain("<svg>");
+    } finally {
+      await app.close();
+    }
   });
 });
