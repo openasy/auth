@@ -82,7 +82,7 @@ export interface AuthOptions {
   links?: { setup?: (token: string) => string; password?: (token: string) => string; signIn?: (error?: string) => string };
   /** Every sign-in, failure and change to people or tokens, for the audit log (ADR 0013). */
   onEvent?: (event: AuthEvent) => void;
-  /** The install's brand (ADR 0053); read from OPENASY_ORGANIZATION, OPENASY_ACCENT and OPENASY_LOGO when not given. */
+  /** The install's brand (ADR 0053); read from OPENASY_ORGANIZATION, OPENASY_ACCENT, OPENASY_LOGO and OPENASY_FAVICON when not given. */
   brand?: BrandSettings;
   /** For tests. */
   now?: () => number;
@@ -198,7 +198,10 @@ export function createAuth(opts: AuthOptions) {
   const roleList = users ? "owner, admin, editor, viewer or user" : "owner, admin, editor or viewer";
   const brand = opts.brand ?? brandFromEnv(process.env);
   // The logo's address names its content, so a browser may keep it for a year and fetches a new one when it changes.
-  const logoUrl = brand.logo ? `${PREFIX}/brand/logo?v=${brand.logo.etag}` : null;
+  const pictureUrl = (name: "logo" | "favicon") => {
+    const p = brand[name];
+    return p ? `${PREFIX}/brand/${name}?v=${p.etag}` : null;
+  };
   const envProviders = opts.oidc ?? [];
   envProviders.forEach(validateProvider);
   for (const p of envProviders) {
@@ -751,29 +754,31 @@ export function createAuth(opts: AuthOptions) {
           providers: all.map((p) => ({ id: p.id, name: p.name })),
           autoRedirect: auto.length === 1 ? auto[0]!.id : null,
           setupRequired: userCount() === 0,
-          brand: { organization: brand.organization ?? null, accent: brand.accent ?? null, logo: logoUrl },
+          brand: { organization: brand.organization ?? null, accent: brand.accent ?? null, logo: pictureUrl("logo"), favicon: pictureUrl("favicon") },
         };
       },
     },
-    // The brand's logo, from this product's own address, so the page never loads a picture from elsewhere (ADR 0053).
-    {
+    // The brand's logo and tab icon, from this product's own address, so the page never loads a picture from elsewhere
+    // (ADR 0053).
+    ...(["logo", "favicon"] as const).map((name): { method: string; path: string; handle: (ctx: Ctx) => unknown } => ({
       method: "GET",
-      path: "/brand/logo",
+      path: `/brand/${name}`,
       handle: ({ res }) => {
-        if (!brand.logo) throw new AuthError(404, "not-found", "No logo: OPENASY_LOGO is not set.");
+        const p = brand[name];
+        if (!p) throw new AuthError(404, "not-found", `No ${name}: OPENASY_${name.toUpperCase()} is not set.`);
         res
           .writeHead(200, {
             ...SECURITY_HEADERS,
-            "content-type": brand.logo.type,
-            "content-length": brand.logo.body.length,
+            "content-type": p.type,
+            "content-length": p.body.length,
             "cache-control": "public, max-age=31536000, immutable",
             // An SVG may hold script: sandboxed, it never runs, even when the picture is opened on its own.
             "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
-            etag: `"${brand.logo.etag}"`,
+            etag: `"${p.etag}"`,
           })
-          .end(brand.logo.body);
+          .end(p.body);
       },
-    },
+    })),
 
     // First start: the one-time link printed in the log creates the owner (ADR 0013).
     {

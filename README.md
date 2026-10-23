@@ -24,7 +24,7 @@ SAML 2.0, LDAP, trusted proxy headers and GitHub sign-in are planned (see ADR 00
 Each release attaches the built package to its [GitHub release](https://github.com/openasy/auth/releases); no registry or token is needed.
 
 ```bash
-npm install https://github.com/openasy/auth/releases/download/v0.8.0/openasy-auth-0.8.0.tgz
+npm install https://github.com/openasy/auth/releases/download/v0.9.0/openasy-auth-0.9.0.tgz
 ```
 
 Node 26 or later.
@@ -120,11 +120,13 @@ import { AuthGate, AccountSettings, MembersSettings, SignInSettings, TokensSetti
 </BrandProvider>;
 ```
 
-**The install's brand (ADR 0053):** `OPENASY_ORGANIZATION`, `OPENASY_ACCENT` (`#rrggbb`) and `OPENASY_LOGO`, the path
-of a mounted SVG, PNG or WebP file up to 512 KB, are read at start. `GET /methods` sends them and the logo is served
-from `GET /brand/logo`, an SVG in a sandbox. A wrong value is left out with a warning in the log. In the web UI,
-`useInstallBrand()` returns them for `BrandProvider` and makes the logo the tab's icon:
-`brand={{ name: "OpenAsy", ...useInstallBrand() }}`.
+**The install's brand (ADR 0053):** `OPENASY_ORGANIZATION`, `OPENASY_ACCENT` (`#rrggbb`), `OPENASY_LOGO`, the path
+of a mounted SVG, PNG or WebP file up to 512 KB in any shape, and `OPENASY_FAVICON`, a square SVG, PNG or ICO up to
+128 KB, are read at start. `GET /methods` sends them and the pictures are served from `GET /brand/logo` and
+`GET /brand/favicon`, an SVG in a sandbox. A wrong value is left out with a warning in the log. In the web UI,
+`useInstallBrand()` returns them for `BrandProvider` and makes the favicon the tab's icon:
+`brand={{ name: "OpenAsy", ...useInstallBrand() }}`. A logo stands for the brand: the sign-in screen shows it at a
+fixed height, without the brand's name.
 
 Settings pages: `AccountSettings` for everyone, `MembersSettings` and `TokensSettings` for admins, and
 `SignInSettings` for identity providers: admins see them, owners add them from a preset with that provider's steps and
@@ -156,6 +158,7 @@ All under `/api/v1/auth`. Errors are RFC 9457 problems with a stable `code`.
 | --- | --- |
 | `GET /methods` | anyone: password on or off, OIDC providers, whether setup is needed, the brand |
 | `GET /brand/logo` | anyone: the logo from `OPENASY_LOGO` |
+| `GET /brand/favicon` | anyone: the tab icon from `OPENASY_FAVICON` |
 | `POST /setup` | the holder of the first-start link |
 | `POST /login`, `POST /login/mfa`, `POST /login/passkey/options`, `POST /login/passkey` | anyone |
 | `GET /oidc/:id/start`, `GET /oidc/:id/callback` | anyone |

@@ -965,6 +965,17 @@ describe("the install's brand (ADR 0053)", () => {
     expect(brandFromEnv({})).toEqual({});
   });
 
+  it("reads the tab icon apart from the logo: SVG, PNG or ICO, up to 128 KB", async () => {
+    const ICO = Buffer.from([0, 0, 1, 0, 1, 0, 16, 16]);
+    expect(brandFromEnv({ OPENASY_FAVICON: file("favicon.ico", ICO) })).toMatchObject({ favicon: { type: "image/x-icon" } });
+    expect(brandFromEnv({ OPENASY_LOGO: file("wide.ico", ICO), OPENASY_FAVICON: file("big.png", Buffer.concat([PNG, Buffer.alloc(128 * 1024)])) })).toEqual({});
+    await settled();
+    expect(warnings).toEqual([
+      `OPENASY_LOGO: ${join(dir, "wide.ico")} is not an SVG, PNG or WebP picture; it is left out.`,
+      `OPENASY_FAVICON: ${join(dir, "big.png")} is larger than 128 KB; it is left out.`,
+    ]);
+  });
+
   it("leaves out what it cannot use, and says why", async () => {
     const b = brandFromEnv({
       OPENASY_ORGANIZATION: "x".repeat(81),
@@ -979,7 +990,7 @@ describe("the install's brand (ADR 0053)", () => {
     expect(warnings).toEqual([
       "OPENASY_ORGANIZATION is longer than 80 characters; it is left out.",
       'OPENASY_ACCENT is a color such as #0a66c2, not "pink"; it is left out.',
-      "OPENASY_LOGO is a file mounted into the container, such as /config/logo.svg, not an address; it is left out.",
+      "OPENASY_LOGO is a file mounted into the container, such as /config/brand/logo.svg, not an address; it is left out.",
       `OPENASY_LOGO: ${join(dir, "missing.svg")} is not in the container; mount it there. It is left out.`,
       `OPENASY_LOGO: ${join(dir, "notes.txt")} is not an SVG, PNG or WebP picture; it is left out.`,
       `OPENASY_LOGO: ${join(dir, "big.png")} is larger than 512 KB; it is left out.`,
@@ -991,7 +1002,7 @@ describe("the install's brand (ADR 0053)", () => {
     const app = await startProduct({ brand });
     try {
       const { brand: sent } = (await app.browser().json<{ brand: { logo: string } }>("/api/v1/auth/methods")).body;
-      expect(sent).toEqual({ organization: null, accent: null, logo: `/api/v1/auth/brand/logo?v=${brand.logo!.etag}` });
+      expect(sent).toEqual({ organization: null, accent: null, logo: `/api/v1/auth/brand/logo?v=${brand.logo!.etag}`, favicon: null });
       const res = await fetch(app.origin + sent.logo);
       expect(res.status).toBe(200);
       expect(res.headers.get("content-type")).toBe("image/svg+xml");

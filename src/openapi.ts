@@ -54,6 +54,7 @@ const schemas: Record<string, Schema> = {
       organization: nullable({ type: "string", description: "Shown under the product's name (OPENASY_ORGANIZATION)." }),
       accent: nullable({ type: "string", pattern: "^#[0-9a-f]{6}$", description: "Buttons and links (OPENASY_ACCENT)." }),
       logo: nullable({ type: "string", description: "The logo's path on this product, which changes with the picture (OPENASY_LOGO)." }),
+      favicon: nullable({ type: "string", description: "The tab icon's path on this product, which changes with the picture (OPENASY_FAVICON)." }),
     }),
   }),
   AuthMember: obj({
@@ -263,6 +264,21 @@ const paths = {
         "200": {
           description: "The logo",
           content: Object.fromEntries(["image/svg+xml", "image/png", "image/webp"].map((t) => [t, { schema: { type: "string", format: "binary" } }])),
+        },
+        ...problems(404),
+      },
+    }),
+  },
+  "/api/v1/auth/brand/favicon": {
+    get: op({
+      operationId: "authBrandFavicon",
+      summary: "The brand's tab icon",
+      description: "The icon OPENASY_FAVICON names (ADR 0053), kept for a year: its address changes with it. An SVG is sandboxed.",
+      security: anyone,
+      responses: {
+        "200": {
+          description: "The icon",
+          content: Object.fromEntries(["image/svg+xml", "image/png", "image/x-icon"].map((t) => [t, { schema: { type: "string", format: "binary" } }])),
         },
         ...problems(404),
       },

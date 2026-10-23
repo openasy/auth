@@ -71,7 +71,7 @@ function useProductName() {
 
 /**
  * The install's brand (ADR 0053) for BrandProvider, from the product's own server: the organization, the color and the
- * logo, which also becomes the tab's icon. Empty until it is read, and when the install sets none:
+ * logo; the favicon becomes the tab's icon. Empty until it is read, and when the install sets none:
  *
  *   const installBrand = useInstallBrand();
  *   <BrandProvider brand={{ name: "OpenAsy", organization: undefined, ...installBrand }}>
@@ -89,11 +89,12 @@ export function useInstallBrand(): Partial<Brand> {
           ...(b.accent && { accent: b.accent }),
           ...(b.logo && { logoUrl: b.logo }),
         });
-        if (b.logo) {
+        // The tab icon is a picture of its own: a logo is often too wide for it. Without one, the product keeps its own.
+        if (b.favicon) {
           const icon = document.querySelector<HTMLLinkElement>("link[rel~='icon']") ?? document.head.appendChild(document.createElement("link"));
           icon.rel = "icon";
           icon.removeAttribute("type");
-          icon.href = b.logo;
+          icon.href = b.favicon;
         }
       })
       // Without the brand the product keeps its own look; the sign-in screen says what is wrong with the server.
@@ -113,10 +114,11 @@ export function useAuth(): AuthContextValue {
 
 // ---- Layout -------------------------------------------------------------------------------------------------------
 
+/** The logo, `size` high and as wide as its shape needs, or the brand's initial. */
 function Mark({ size = 40 }: { size?: number }) {
   const { brand, theme } = useBrand();
   const logo = theme === "dark" ? (brand.logoDarkUrl ?? brand.logoUrl) : brand.logoUrl;
-  if (logo) return <img src={logo} alt="" width={size} height={size} className="rounded-lg object-contain" />;
+  if (logo) return <img src={logo} alt="" height={size} className="w-auto object-contain" style={{ height: size, maxWidth: size * 6 }} />;
   return (
     <span aria-hidden className="grid place-items-center rounded-lg bg-accent text-lg font-semibold text-accent-contrast" style={{ width: size, height: size }}>
       {brand.name.trim().charAt(0).toUpperCase()}
@@ -133,7 +135,8 @@ function AuthLayout({ children, wide = false }: { children: ReactNode; wide?: bo
       <div className="flex w-full flex-col gap-4 rounded-xl border border-line bg-surface p-6 shadow-raised" style={{ maxWidth: wide ? 460 : 380 }}>
         <div className="flex flex-col items-center gap-2 text-center">
           <Mark />
-          <span className="text-sm font-semibold text-fg">{brand.name}</span>
+          {/* A logo stands for the brand, so its name is not written under it. */}
+          {!brand.logoUrl && <span className="text-sm font-semibold text-fg">{brand.name}</span>}
           {(brand.organization ?? product) && <span className="-mt-1.5 text-xs text-fg-muted">{brand.organization ?? product}</span>}
         </div>
         {children}

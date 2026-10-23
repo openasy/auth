@@ -15,7 +15,7 @@ export interface Methods {
   autoRedirect: string | null;
   setupRequired: boolean;
   /** The install's brand (ADR 0053); null where it is not set. */
-  brand: { organization: string | null; accent: string | null; logo: string | null };
+  brand: { organization: string | null; accent: string | null; logo: string | null; favicon: string | null };
 }
 
 export interface Member {

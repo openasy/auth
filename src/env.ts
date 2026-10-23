@@ -98,23 +98,45 @@ export interface BrandSettings {
   organization?: string;
   /** #rrggbb. */
   accent?: string;
-  /** The picture, read once at start and served from the product's own address. */
-  logo?: { body: Buffer; type: "image/svg+xml" | "image/png" | "image/webp"; etag: string };
+  /** The pictures, read once at start and served from the product's own address. */
+  logo?: BrandPicture;
+  /** The browser tab's icon. */
+  favicon?: BrandPicture;
 }
+export interface BrandPicture {
+  body: Buffer;
+  type: PictureType;
+  etag: string;
+}
+type PictureType = "image/svg+xml" | "image/png" | "image/webp" | "image/x-icon";
 
-const LOGO_MAX = 512 * 1024;
-
-/** What a picture is, from its first bytes rather than its name: SVG, PNG or WebP, or undefined. */
-function logoType(body: Buffer): NonNullable<BrandSettings["logo"]>["type"] | undefined {
+/** What a picture is, from its first bytes rather than its name. */
+function pictureType(body: Buffer): PictureType | undefined {
   if (body.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
   if (body.subarray(0, 4).toString("latin1") === "RIFF" && body.subarray(8, 12).toString("latin1") === "WEBP") return "image/webp";
+  if (body.subarray(0, 4).equals(Buffer.from([0, 0, 1, 0]))) return "image/x-icon";
   if (/<svg[\s>]/i.test(body.subarray(0, 4096).toString("utf8"))) return "image/svg+xml";
   return undefined;
 }
 
+const PICTURES = {
+  OPENASY_LOGO: {
+    max: 512 * 1024,
+    types: ["image/svg+xml", "image/png", "image/webp"],
+    kinds: "an SVG, PNG or WebP picture",
+    example: "/config/brand/logo.svg",
+  },
+  OPENASY_FAVICON: {
+    max: 128 * 1024,
+    types: ["image/svg+xml", "image/png", "image/x-icon"],
+    kinds: "an SVG, PNG or ICO icon",
+    example: "/config/brand/favicon.png",
+  },
+} as const;
+
 /**
- * The brand from OPENASY_ORGANIZATION, OPENASY_ACCENT and OPENASY_LOGO, which the install keeps in config/brand.env.
- * A setting that cannot be used is left out with a warning: the product starts with its own look instead.
+ * The brand from OPENASY_ORGANIZATION, OPENASY_ACCENT, OPENASY_LOGO and OPENASY_FAVICON, which the install keeps in
+ * config/brand.env. A setting that cannot be used is left out with a warning: the product starts with its own look.
  */
 export function brandFromEnv(env: Record<string, string | undefined>): BrandSettings {
   const brand: BrandSettings = {};
@@ -129,19 +151,21 @@ export function brandFromEnv(env: Record<string, string | undefined>): BrandSett
     if (/^#[0-9a-f]{6}$/i.test(accent)) brand.accent = accent.toLowerCase();
     else warn(`OPENASY_ACCENT is a color such as #0a66c2, not "${accent}"; it is left out.`);
   }
-  const logo = env.OPENASY_LOGO?.trim();
-  if (logo) {
-    if (/^[a-z]+:\/\//i.test(logo)) {
-      warn(`OPENASY_LOGO is a file mounted into the container, such as /config/logo.svg, not an address; it is left out.`);
-    } else if (!existsSync(logo)) {
-      warn(`OPENASY_LOGO: ${logo} is not in the container; mount it there. It is left out.`);
-    } else {
-      const body = readFileSync(logo);
-      const type = logoType(body);
-      if (body.length > LOGO_MAX) warn(`OPENASY_LOGO: ${logo} is larger than 512 KB; it is left out.`);
-      else if (!type) warn(`OPENASY_LOGO: ${logo} is not an SVG, PNG or WebP picture; it is left out.`);
-      else brand.logo = { body, type, etag: createHash("sha256").update(body).digest("base64url").slice(0, 16) };
-    }
-  }
+  const picture = (name: keyof typeof PICTURES): BrandPicture | undefined => {
+    const path = env[name]?.trim();
+    if (!path) return undefined;
+    const { max, types, kinds, example } = PICTURES[name];
+    if (/^[a-z]+:\/\//i.test(path)) return void warn(`${name} is a file mounted into the container, such as ${example}, not an address; it is left out.`);
+    if (!existsSync(path)) return void warn(`${name}: ${path} is not in the container; mount it there. It is left out.`);
+    const body = readFileSync(path);
+    const type = pictureType(body);
+    if (body.length > max) return void warn(`${name}: ${path} is larger than ${max / 1024} KB; it is left out.`);
+    if (!type || !(types as readonly string[]).includes(type)) return void warn(`${name}: ${path} is not ${kinds}; it is left out.`);
+    return { body, type, etag: createHash("sha256").update(body).digest("base64url").slice(0, 16) };
+  };
+  const logo = picture("OPENASY_LOGO");
+  if (logo) brand.logo = logo;
+  const favicon = picture("OPENASY_FAVICON");
+  if (favicon) brand.favicon = favicon;
   return brand;
 }
