@@ -24,7 +24,7 @@ SAML 2.0, LDAP, trusted proxy headers and GitHub sign-in are planned (see ADR 00
 Each release attaches the built package to its [GitHub release](https://github.com/openasy/auth/releases); no registry or token is needed.
 
 ```bash
-npm install https://github.com/openasy/auth/releases/download/v0.6.0/openasy-auth-0.6.0.tgz
+npm install https://github.com/openasy/auth/releases/download/v0.7.0/openasy-auth-0.7.0.tgz
 ```
 
 Node 26 or later.
@@ -126,7 +126,8 @@ redirect URI, check the issuer and map groups to roles. With a provider set up, 
 to become the owner through it.
 
 The screens speak English, Turkish and German, in the `locale` given to `BrandProvider` (`useLocalePreference()` from
-`@openasy/ui` 0.5.0 or later). Their words are in `src/messages.ts`. Messages from the server and each provider's setup
+`@openasy/ui` 0.6.0 or later). Their words are in `src/messages/en.json`, `tr.json` and `de.json`, in i18next's `auth`
+namespace. Messages from the server and each provider's setup
 steps are still in English.
 
 In the web UI, `@openasy/auth/client` calls the same routes, including the browser's passkey prompts:

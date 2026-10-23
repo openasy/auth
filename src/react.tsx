@@ -1,17 +1,19 @@
 // Screens for @openasy/auth, built from @openasy/ui: the sign-in gate around a product's UI, and the Account, Members
 // and API tokens settings. They follow the Identity/Sign-in stories in the ui Storybook.
-import { Badge, Button, Callout, Panel, SelectField, Switch, TextField, useBrand, useMessages } from "@openasy/ui";
+import { Badge, Button, Callout, defineMessages, Panel, SelectField, Switch, TextField, useBrand } from "@openasy/ui";
 import { ArrowLeft, Copy, Download, Fingerprint, KeyRound, LogIn, Pencil, Plus, ShieldCheck, Smartphone, Trash2 } from "lucide-react";
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ClipboardEvent, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { encode } from "uqr";
 import { auth, AuthApiError, passkeysSupported, signedOut, takeAuthParams, type ApiToken, type Me, type Member, type Methods, type Provider, type ProviderChange, type Role, type Session } from "./client.ts";
-import { MESSAGES } from "./messages.ts";
+import de from "./messages/de.json" with { type: "json" };
+import en from "./messages/en.json" with { type: "json" };
+import tr from "./messages/tr.json" with { type: "json" };
 import { PRESETS } from "./presets.ts";
 
 export { auth, AuthApiError, type Me, type Member, type Provider, type Role } from "./client.ts";
 
-/** `t(key, vars)` in the BrandProvider locale. */
-const useT = () => useMessages(MESSAGES);
+/** `t(key, values)` in the BrandProvider locale. The words are in messages/<locale>.json. */
+const useT = defineMessages("auth", { en, tr, de });
 type T = ReturnType<typeof useT>;
 const roleName = (t: T, role: Role) => t(`role.${role}`);
 const RANK: Role[] = ["user", "viewer", "editor", "admin", "owner"];
