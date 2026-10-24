@@ -420,6 +420,24 @@ describe("OIDC", () => {
     expect(me).toMatchObject({ role: "editor", status: "active", providers: ["corp"] });
   });
 
+  it("takes the person's name from the provider at every sign-in", async () => {
+    await withProvider({ defaultRole: "viewer" });
+    const name = async (b: ReturnType<typeof app.browser>) => (await b.json<{ user: { name: string } }>("/api/v1/auth/me")).body.user.name;
+    idp.next = { sub: "u6", email: "dev@example.com", email_verified: true, name: "Dev" };
+    const first = app.browser();
+    await oidcSignIn(first, "corp");
+    expect(await name(first)).toBe("Dev");
+    // Renamed at the provider: the next sign-in brings the new name, and one without a name keeps it.
+    idp.next = { sub: "u6", email: "dev@example.com", email_verified: true, name: "Ahmet Samet Yüzlü" };
+    const again = app.browser();
+    await oidcSignIn(again, "corp");
+    expect(await name(again)).toBe("Ahmet Samet Yüzlü");
+    idp.next = { sub: "u6", email: "dev@example.com", email_verified: true };
+    const nameless = app.browser();
+    await oidcSignIn(nameless, "corp");
+    expect(await name(nameless)).toBe("Ahmet Samet Yüzlü");
+  });
+
   it("does not link by an unverified email", async () => {
     await withProvider();
     await createOwner(app);
@@ -965,6 +983,14 @@ describe("the install's brand (ADR 0053)", () => {
     expect(brandFromEnv({})).toEqual({});
   });
 
+  it("reads where people get help: an email address or an https address", async () => {
+    expect(brandFromEnv({ OPENASY_SUPPORT: " help@acme.example " })).toEqual({ support: "help@acme.example" });
+    expect(brandFromEnv({ OPENASY_SUPPORT: "https://help.acme.example/" })).toEqual({ support: "https://help.acme.example/" });
+    expect(brandFromEnv({ OPENASY_SUPPORT: "call us" })).toEqual({});
+    await settled();
+    expect(warnings).toEqual(['OPENASY_SUPPORT is an email address or an https address, not "call us"; it is left out.']);
+  });
+
   it("reads the tab icon apart from the logo: SVG, PNG or ICO, up to 128 KB", async () => {
     const ICO = Buffer.from([0, 0, 1, 0, 1, 0, 16, 16]);
     expect(brandFromEnv({ OPENASY_FAVICON: file("favicon.ico", ICO) })).toMatchObject({ favicon: { type: "image/x-icon" } });
@@ -1002,7 +1028,7 @@ describe("the install's brand (ADR 0053)", () => {
     const app = await startProduct({ brand });
     try {
       const { brand: sent } = (await app.browser().json<{ brand: { logo: string } }>("/api/v1/auth/methods")).body;
-      expect(sent).toEqual({ organization: null, accent: null, logo: `/api/v1/auth/brand/logo?v=${brand.logo!.etag}`, favicon: null });
+      expect(sent).toEqual({ organization: null, accent: null, logo: `/api/v1/auth/brand/logo?v=${brand.logo!.etag}`, favicon: null, support: null });
       const res = await fetch(app.origin + sent.logo);
       expect(res.status).toBe(200);
       expect(res.headers.get("content-type")).toBe("image/svg+xml");

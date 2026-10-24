@@ -544,6 +544,12 @@ export function createAuth(opts: AuthOptions) {
         }
       }
       if (user.status === "invited") db.prepare("UPDATE auth_users SET status = 'active' WHERE id = ?").run(user.id);
+      // The provider keeps the person's name, so a change made there shows here at the next sign-in.
+      const name = c.name?.trim().slice(0, 128);
+      if (name && name !== user.name) {
+        db.prepare("UPDATE auth_users SET name = ? WHERE id = ?").run(name, user.id);
+        emit({ type: "member-updated", target: user.id, method: `oidc:${p.id}`, ip, detail: "name from the provider" });
+      }
     }
     db.prepare(
       "INSERT INTO auth_identities (provider, subject, user_id, email, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (provider, subject) DO UPDATE SET email = excluded.email, last_used_at = excluded.last_used_at",
@@ -754,7 +760,13 @@ export function createAuth(opts: AuthOptions) {
           providers: all.map((p) => ({ id: p.id, name: p.name })),
           autoRedirect: auto.length === 1 ? auto[0]!.id : null,
           setupRequired: userCount() === 0,
-          brand: { organization: brand.organization ?? null, accent: brand.accent ?? null, logo: pictureUrl("logo"), favicon: pictureUrl("favicon") },
+          brand: {
+            organization: brand.organization ?? null,
+            accent: brand.accent ?? null,
+            logo: pictureUrl("logo"),
+            favicon: pictureUrl("favicon"),
+            support: brand.support ?? null,
+          },
         };
       },
     },

@@ -64,6 +64,7 @@ describe("/api/v1/auth matches its OpenAPI description", () => {
         accent: "#c30193",
         logo: { body: Buffer.from("<svg/>"), type: "image/svg+xml", etag: "abc" },
         favicon: { body: Buffer.from([0, 0, 1, 0]), type: "image/x-icon", etag: "def" },
+        support: "help@acme.example",
       },
     });
     try {
@@ -72,6 +73,7 @@ describe("/api/v1/auth matches its OpenAPI description", () => {
         accent: "#c30193",
         logo: "/api/v1/auth/brand/logo?v=abc",
         favicon: "/api/v1/auth/brand/favicon?v=def",
+        support: "help@acme.example",
       });
       expect((await check(branded.browser(), "GET", "/api/v1/auth/brand/favicon", "/api/v1/auth/brand/favicon?v=def")).status).toBe(200);
       expect((await check(branded.browser(), "GET", "/api/v1/auth/brand/logo", "/api/v1/auth/brand/logo?v=abc")).status).toBe(200);

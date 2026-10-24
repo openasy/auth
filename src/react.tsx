@@ -88,6 +88,7 @@ export function useInstallBrand(): Partial<Brand> {
           ...(b.organization && { organization: b.organization }),
           ...(b.accent && { accent: b.accent }),
           ...(b.logo && { logoUrl: b.logo }),
+          ...(b.support && { support: b.support }),
         });
         // The tab icon is a picture of its own: a logo is often too wide for it. Without one, the product keeps its own.
         if (b.favicon) {

@@ -102,6 +102,8 @@ export interface BrandSettings {
   logo?: BrandPicture;
   /** The browser tab's icon. */
   favicon?: BrandPicture;
+  /** Where people get help: an email address or an https address (OPENASY_SUPPORT). OpenAsy's own when left out. */
+  support?: string;
 }
 export interface BrandPicture {
   body: Buffer;
@@ -135,7 +137,7 @@ const PICTURES = {
 } as const;
 
 /**
- * The brand from OPENASY_ORGANIZATION, OPENASY_ACCENT, OPENASY_LOGO and OPENASY_FAVICON, which the install keeps in
+ * The brand from OPENASY_ORGANIZATION, OPENASY_ACCENT, OPENASY_LOGO, OPENASY_FAVICON and OPENASY_SUPPORT, which the install keeps in
  * config/brand.env. A setting that cannot be used is left out with a warning: the product starts with its own look.
  */
 export function brandFromEnv(env: Record<string, string | undefined>): BrandSettings {
@@ -150,6 +152,11 @@ export function brandFromEnv(env: Record<string, string | undefined>): BrandSett
   if (accent) {
     if (/^#[0-9a-f]{6}$/i.test(accent)) brand.accent = accent.toLowerCase();
     else warn(`OPENASY_ACCENT is a color such as #0a66c2, not "${accent}"; it is left out.`);
+  }
+  const support = env.OPENASY_SUPPORT?.trim();
+  if (support) {
+    if (/^[^\s@/]+@[^\s@/]+\.[^\s@/]+$/.test(support) || /^https:\/\/[^\s]+$/i.test(support)) brand.support = support;
+    else warn(`OPENASY_SUPPORT is an email address or an https address, not "${support}"; it is left out.`);
   }
   const picture = (name: keyof typeof PICTURES): BrandPicture | undefined => {
     const path = env[name]?.trim();

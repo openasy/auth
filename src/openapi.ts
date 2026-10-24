@@ -55,6 +55,10 @@ const schemas: Record<string, Schema> = {
       accent: nullable({ type: "string", pattern: "^#[0-9a-f]{6}$", description: "Buttons and links (OPENASY_ACCENT)." }),
       logo: nullable({ type: "string", description: "The logo's path on this product, which changes with the picture (OPENASY_LOGO)." }),
       favicon: nullable({ type: "string", description: "The tab icon's path on this product, which changes with the picture (OPENASY_FAVICON)." }),
+      support: nullable({
+        type: "string",
+        description: "Where people get help, an email address or an https address (OPENASY_SUPPORT); OpenAsy's own when null.",
+      }),
     }),
   }),
   AuthMember: obj({
