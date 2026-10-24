@@ -3,9 +3,10 @@
 // (ADR 0033). fetch stands in for the product and for Identity.
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { useLocalePreference, useThemePreference } from "@openasy/ui";
+import { useEffect, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Preferences } from "../src/client.ts";
-import { AccountSettings, AuthGate, useAuth } from "../src/react.tsx";
+import { AccountSettings, AuthGate, useAccountMenu, useAuth } from "../src/react.tsx";
 
 const IDENTITY = "https://id.example.com";
 
@@ -113,12 +114,60 @@ describe("preferences kept in Identity", () => {
     expect(screen.getByTestId("shown").textContent).toContain("light");
   });
 
-  it("sends the account page to Identity", async () => {
+  it("sends the account page to Identity, with the page before it to come back to", async () => {
     serve(true);
     const assign = vi.fn();
-    vi.stubGlobal("location", { ...window.location, assign });
-    render(<AuthGate>{<AccountSettings />}</AuthGate>);
-    await waitFor(() => expect(assign).toHaveBeenCalledWith(`${IDENTITY}/account`));
+    const real = window.location;
+    vi.stubGlobal("location", {
+      get href() {
+        return real.href;
+      },
+      get hash() {
+        return real.hash;
+      },
+      get origin() {
+        return real.origin;
+      },
+      get pathname() {
+        return real.pathname;
+      },
+      get search() {
+        return real.search;
+      },
+      assign,
+    });
+    history.pushState(null, "", "/findings?tab=open");
+    function Pages() {
+      const [account, setAccount] = useState(false);
+      useEffect(() => {
+        const moved = () => setAccount(real.pathname === "/account");
+        window.addEventListener("popstate", moved);
+        return () => window.removeEventListener("popstate", moved);
+      }, []);
+      return account ? <AccountSettings /> : <p>findings</p>;
+    }
+    render(<AuthGate>{<Pages />}</AuthGate>);
+    await screen.findByText("findings");
+    act(() => {
+      history.pushState(null, "", "/account");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    const back = encodeURIComponent(`${real.origin}/findings?tab=open`);
+    await waitFor(() => expect(assign).toHaveBeenCalledWith(`${IDENTITY}/account?from=${back}`));
+  });
+
+  it("leaves Identity's pages out of the menu and leads the account there", async () => {
+    serve(true);
+    const shown: string[][] = [];
+    function Menu() {
+      const account = useAccountMenu();
+      shown.push(account.settings([{ id: "setup" }, { id: "members" }, { id: "signin" }, { id: "tokens" }, { id: "account" }]).map((i) => i.id));
+      return <a href={account.user.accountHref}>account</a>;
+    }
+    render(<AuthGate>{<Menu />}</AuthGate>);
+    const link = await screen.findByText("account");
+    expect(shown.at(-1)).toEqual(["setup", "tokens"]);
+    expect(link.getAttribute("href")).toBe(`${IDENTITY}/account?from=${encodeURIComponent(location.href)}`);
   });
 
   it("keeps them in the product itself without Identity", async () => {

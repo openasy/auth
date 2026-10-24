@@ -135,12 +135,16 @@ to become the owner through it.
 
 **With Identity (ADR 0033):** when the provider is `openasy-identity`, Identity keeps the people who sign in through
 it, and `GET /me` names it in `managedBy`. `AccountSettings` and `MembersSettings` send the browser to Identity's
-Account and People pages. `AuthGate` keeps the theme and language of the browser the person's own: it reads them from
-Identity's `GET /me/preferences` when the page opens and whenever the person comes back to it, and sends a choice made
-in the product there, so a change made in one product or in Identity shows in all of them. The name shown is Identity's
-too. Without Identity, they are kept by the product itself, so they follow the person from browser to browser. Identity
-passes `preferenceOrigins`, the origins of its applications, so their pages may call it with its session cookie; this
-works when the products share a site, such as `id.example.com` and `vpn.example.com`, and with Identity set in the
+Account and People pages, with the product's page the person came from in `?from=`, so Identity offers the way back.
+`useAccountMenu()` leaves Members, Sign-in and Account out of the product's menu then, and gives AppShell's user
+menu where to manage the account and how to sign out: `footerNav={account.settings(footerNav)}` and
+`user={{ name, role, ...account.user }}`.
+`AuthGate` keeps the theme and language of the browser the person's own: it reads them from Identity's
+`GET /me/preferences` when the page opens and whenever the person comes back to it, and sends a choice made in the product
+there, so a change made in one product or in Identity shows in all of them. The name shown is Identity's too. Without
+Identity, they are kept by the product itself, so they follow the person from browser to browser. Identity passes
+`preferenceOrigins`, the origins of its applications, so their pages may call it with its session cookie; this works
+when the products share a site, such as `id.example.com` and `vpn.example.com`, and with Identity set in the
 environment. The product's content security policy names it in `connect-src`: `identityOrigin(process.env)` returns
 its origin.
 

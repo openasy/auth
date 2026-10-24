@@ -865,6 +865,7 @@ function SignedIn({
   children: ReactNode;
 }) {
   const name = usePreferenceSync(me);
+  useEffect(() => followPages(), []);
   return (
     <AuthContext.Provider
       value={{
@@ -879,6 +880,18 @@ function SignedIn({
       {children}
     </AuthContext.Provider>
   );
+}
+
+/** The product's page before the current one: navigate() and the back button both announce a new page with popstate. */
+const pages: { current: string; previous: string | null } = { current: "", previous: null };
+function followPages() {
+  pages.current = location.pathname + location.search;
+  const moved = () => {
+    const at = location.pathname + location.search;
+    if (at !== pages.current) [pages.previous, pages.current] = [pages.current, at];
+  };
+  window.addEventListener("popstate", moved);
+  return () => window.removeEventListener("popstate", moved);
 }
 
 /** Whether this browser has a theme or a language of its own, not only the defaults. */
@@ -994,6 +1007,29 @@ const Cell = ({ children, mono = false }: { children: ReactNode; mono?: boolean 
 );
 
 /** The signed-in person: name, password, second factors, recovery codes and sessions. */
+/** Settings pages Identity keeps when people sign in through it (ADR 0033); the product's menu leaves them out. */
+const KEPT_IN_IDENTITY = new Set(["members", "signin", "account"]);
+
+/**
+ * For the product's menus. `settings(items)` leaves out Members, Sign-in and Account when Identity keeps people
+ * (ADR 0033). `accountHref` and `onSignOut` go to AppShell's user: the account is the product's Account page, or
+ * Identity's, which then offers the way back to this page.
+ *
+ *   const account = useAccountMenu();
+ *   <AppShell footerNav={account.settings(footerNav)} user={{ name, role, ...account.user }} />
+ */
+export function useAccountMenu() {
+  const { me, signOut } = useAuth();
+  const identity = me.managedBy?.url;
+  return {
+    settings: <T extends { id: string }>(items: T[]): T[] => (identity ? items.filter((i) => !KEPT_IN_IDENTITY.has(i.id)) : items),
+    user: {
+      accountHref: identity ? `${identity}/account?from=${encodeURIComponent(location.href)}` : "/account",
+      onSignOut: () => void signOut(),
+    },
+  };
+}
+
 /**
  * Settings → Account. With Identity keeping the person (ADR 0033), their account is there: this sends them to it.
  */
@@ -1265,8 +1301,10 @@ export function MembersSettings() {
 }
 
 /** Sends the browser to Identity's page, with a link in case it does not go. */
-function KeptInIdentity({ url, name, what }: { url: string; name: string; what: "account" | "members" }) {
+function KeptInIdentity({ url: page, name, what }: { url: string; name: string; what: "account" | "members" }) {
   const t = useT();
+  // Identity offers the way back to the page before this one, so the person is not left there.
+  const url = `${page}?from=${encodeURIComponent(location.origin + (pages.previous ?? "/"))}`;
   useEffect(() => window.location.assign(url), [url]);
   return (
     <Callout tone="info" title={t(`keptInIdentity.${what}`, { name })}>
