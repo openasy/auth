@@ -39,6 +39,18 @@ export interface Me {
   hasPassword: boolean;
   passkeys: Array<{ id: string; name: string; createdAt: string; lastUsedAt: string | null }>;
   recoveryCodesLeft: number;
+  /** Identity, when people sign in through it: their account, role and preferences are kept there (ADR 0033). */
+  managedBy: { name: string; url: string } | null;
+  preferences: Preferences;
+}
+
+/** What a person chose for every screen: kept with them, and in Identity when it manages them. */
+export interface Preferences {
+  name: string;
+  /** null until the person chooses one. */
+  theme: "system" | "light" | "dark" | null;
+  /** A language tag such as tr; null until the person chooses one. */
+  locale: string | null;
 }
 
 export type SignInResult =
@@ -116,10 +128,11 @@ export class AuthApiError extends Error {
 
 const BASE = "/api/v1/auth";
 
-async function call<T>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
-  const res = await fetch(BASE + path, {
+/** `origin`: another product's auth API, such as Identity's, called with its own session cookie. */
+async function call<T>(path: string, init: { method?: string; body?: unknown; origin?: string } = {}): Promise<T> {
+  const res = await fetch((init.origin ?? "") + BASE + path, {
     method: init.method ?? (init.body === undefined ? "GET" : "POST"),
-    credentials: "same-origin",
+    credentials: init.origin ? "include" : "same-origin",
     headers: init.body === undefined ? undefined : { "content-type": "application/json" },
     body: init.body === undefined ? undefined : JSON.stringify(init.body),
   });
@@ -159,6 +172,10 @@ export const auth = {
     call<SignInResult & { status: "signed-in" }>(`/links/${encodeURIComponent(token)}`, { body: { password, name } }),
 
   me: () => call<Me>("/me"),
+  /** The person's preferences here, or at `origin` (Identity's) when it manages them. */
+  preferences: (origin?: string) => call<Preferences>("/me/preferences", { origin }),
+  setPreferences: (change: { theme?: "system" | "light" | "dark"; locale?: string }, origin?: string) =>
+    call<Preferences>("/me/preferences", { method: "PATCH", body: change, origin }),
   rename: (name: string) => call<Member>("/me", { method: "PATCH", body: { name } }),
   changePassword: (currentPassword: string, newPassword: string) => call<void>("/me/password", { body: { currentPassword, newPassword } }),
   sessions: () => call<{ sessions: Session[] }>("/me/sessions").then((r) => r.sessions),

@@ -72,6 +72,7 @@ export function oidcFromEnv(env: Record<string, string | undefined>, legacyPrefi
       ?.split(",")
       .map((d) => d.trim().toLowerCase()),
     autoRedirect: autoRedirect === "true" || undefined,
+    preset: p?.id,
   };
   if (legacy.length) {
     const renamed = legacy.map((x) => `${x} -> ${x.replace(legacyPrefix!, "OPENASY_")}`).join(", ");
@@ -175,4 +176,18 @@ export function brandFromEnv(env: Record<string, string | undefined>): BrandSett
   const favicon = picture("OPENASY_FAVICON");
   if (favicon) brand.favicon = favicon;
   return brand;
+}
+
+/**
+ * Identity's origin when OPENASY_OIDC_PROVIDER is openasy-identity (ADR 0033), for the product's content security
+ * policy: its pages read and change people's theme and language there, so `connect-src` must name it.
+ */
+export function identityOrigin(env: Record<string, string | undefined>): string | undefined {
+  const issuer = env.OPENASY_OIDC_ISSUER?.trim();
+  if (env.OPENASY_OIDC_PROVIDER?.trim() !== "openasy-identity" || !issuer) return undefined;
+  try {
+    return new URL(issuer).origin;
+  } catch {
+    return undefined;
+  }
 }

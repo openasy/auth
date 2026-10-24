@@ -219,5 +219,10 @@
     "invitedOnly": "Nur eingeladene Personen",
     "environment": "Umgebung",
     "straightBadge": "Direkt"
+  },
+  "keptInIdentity": {
+    "account": "Ihr Konto wird in {{name}} verwaltet",
+    "members": "Wer sich mit welcher Rolle anmeldet, wird in {{name}} verwaltet",
+    "open": "{{name}} öffnen"
   }
 }

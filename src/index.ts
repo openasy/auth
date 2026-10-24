@@ -34,7 +34,7 @@ export { AuthError, sendProblem, type AuthProblem } from "./http.ts";
 export { ROLES, atLeast, type Role } from "./roles.ts";
 export type { OidcProvider } from "./oidc.ts";
 export { PRESETS, preset, type ProviderPreset } from "./presets.ts";
-export { brandFromEnv, oidcFromEnv, readSecretsKey, type BrandSettings } from "./env.ts";
+export { brandFromEnv, identityOrigin, oidcFromEnv, readSecretsKey, type BrandSettings } from "./env.ts";
 export { authOpenApi, mergeOpenApi } from "./openapi.ts";
 
 export interface AuthOptions {
@@ -48,6 +48,12 @@ export interface AuthOptions {
   origin: string;
   /** Other origins allowed to send requests with the session cookie, such as the Vite dev server. */
   trustedOrigins?: string[];
+  /**
+   * Origins whose pages may read and change the signed-in person's name, theme and language here with the session
+   * cookie (CORS): Identity names the applications people sign in to through it, so they show what was chosen here
+   * (ADR 0033). Asked at each request, so an application added later is allowed at once.
+   */
+  preferenceOrigins?: () => Iterable<string>;
   /** Sign in with email and password. Default true; turn it off when everyone uses OIDC. */
   passwords?: boolean;
   /**
@@ -143,6 +149,8 @@ interface UserRow {
   password_hash: string | null;
   created_at: string;
   last_sign_in_at: string | null;
+  theme: "system" | "light" | "dark" | null;
+  locale: string | null;
 }
 
 interface ProviderRow {
@@ -407,11 +415,19 @@ export function createAuth(opts: AuthOptions) {
     return { user: row as UserRow, sessionId: row.session_id, method: row.method, mfa: row.mfa === 1, factor: row.factor };
   }
 
-  /** Requests with the session cookie must come from the product's own pages. */
+  /** The origin of a request for the preferences from a page that may ask for them (`preferenceOrigins`). */
+  function preferenceOrigin(req: IncomingMessage): string | undefined {
+    const o = req.headers.origin;
+    if (!o || !opts.preferenceOrigins || new URL(req.url ?? "/", "http://localhost").pathname !== `${PREFIX}/me/preferences`) return undefined;
+    for (const allowed of opts.preferenceOrigins()) if (allowed === o) return o;
+    return undefined;
+  }
+
+  /** Requests with the session cookie must come from the product's own pages, or ask for the preferences from one allowed to. */
   function checkOrigin(req: IncomingMessage) {
     if (SAFE.has(req.method ?? "GET")) return;
     const o = req.headers.origin;
-    if (o ? allowedOrigins.has(o) : req.headers["sec-fetch-site"] === "same-origin") return;
+    if (o ? allowedOrigins.has(o) || preferenceOrigin(req) : req.headers["sec-fetch-site"] === "same-origin") return;
     throw new AuthError(403, "cross-site", `Requests must come from ${origin}.`);
   }
 
@@ -575,6 +591,7 @@ export function createAuth(opts: AuthOptions) {
     allowedDomains: (JSON.parse(r.allowed_domains) as string[]).length ? (JSON.parse(r.allowed_domains) as string[]) : undefined,
     allowInsecure: opts.allowInsecureIssuers,
     autoRedirect: r.auto_redirect === 1 || undefined,
+    preset: r.preset,
   });
 
   /** Every provider people can sign in with now: the environment's first, then the enabled ones from Settings. */
@@ -584,6 +601,18 @@ export function createAuth(opts: AuthOptions) {
       .filter((r) => r.enabled)
       .map(fromRow),
   ];
+
+  /**
+   * Identity, when people sign in through it: it keeps their account, their role and their preferences (ADR 0033).
+   * Only from the environment, as the product's content security policy lets its pages call Identity from start
+   * (identityOrigin).
+   */
+  function identityOf(): { name: string; url: string } | null {
+    const p = envProviders.find((x) => x.preset === "openasy-identity");
+    return p ? { name: p.name, url: new URL(p.issuer).origin } : null;
+  }
+
+  const preferencesOf = (row: UserRow) => ({ name: row.name, theme: row.theme, locale: row.locale });
 
   /** The first person, through a provider and the one-time setup link: they become the owner (ADR 0013). */
   function oidcOwner(p: OidcProvider, c: OidcClaims, setupHash: string, ip: string): UserRow {
@@ -1064,6 +1093,8 @@ export function createAuth(opts: AuthOptions) {
           passkeys: passkeys(p.user.id).map((k) => ({ id: k.id, name: k.name, createdAt: k.created_at, lastUsedAt: k.last_used_at })),
           recoveryCodesLeft: (db.prepare("SELECT COUNT(*) AS n FROM auth_recovery_codes WHERE user_id = ? AND used_at IS NULL").get(p.user.id) as { n: number })
             .n,
+          managedBy: identityOf(),
+          preferences: preferencesOf(row),
         };
       },
     },
@@ -1075,6 +1106,34 @@ export function createAuth(opts: AuthOptions) {
         const name = str(await body(), "name", { max: 128 }).trim();
         db.prepare("UPDATE auth_users SET name = ? WHERE id = ?").run(name, p.user.id);
         return toUser(userRow(p.user.id)!);
+      },
+    },
+    // The person's name, theme and language. Identity's are read and changed by the applications that sign in
+    // through it, from their own pages (preferenceOrigins), so a choice made in one shows in all of them.
+    {
+      method: "GET",
+      path: "/me/preferences",
+      handle: ({ req }) => preferencesOf(userRow(sessionPrincipal(req, "user", { allowMfaSetup: true }).user.id)!),
+    },
+    {
+      method: "PATCH",
+      path: "/me/preferences",
+      handle: async ({ req, body }) => {
+        const p = sessionPrincipal(req, "user", { allowMfaSetup: true });
+        const b = await body();
+        const unknown = Object.keys(b).filter((k) => k !== "theme" && k !== "locale");
+        if (unknown.length) throw new AuthError(422, "invalid-body", `Unknown field: ${unknown.join(", ")}. Send theme, locale or both.`);
+        if (b.theme !== undefined) {
+          if (b.theme !== "system" && b.theme !== "light" && b.theme !== "dark")
+            throw new AuthError(422, "invalid-body", "theme must be system, light or dark.");
+          db.prepare("UPDATE auth_users SET theme = ? WHERE id = ?").run(b.theme, p.user.id);
+        }
+        if (b.locale !== undefined) {
+          if (typeof b.locale !== "string" || !/^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/.test(b.locale))
+            throw new AuthError(422, "invalid-body", "locale must be a language tag such as en or tr.");
+          db.prepare("UPDATE auth_users SET locale = ? WHERE id = ?").run(b.locale, p.user.id);
+        }
+        return preferencesOf(userRow(p.user.id)!);
       },
     },
     {
@@ -1565,6 +1624,18 @@ export function createAuth(opts: AuthOptions) {
     async handle(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
       const url = new URL(req.url ?? "/", "http://localhost");
       if (!url.pathname.startsWith(`${PREFIX}/`)) return false;
+      const cors = preferenceOrigin(req);
+      if (cors) {
+        res.setHeader("access-control-allow-origin", cors);
+        res.setHeader("access-control-allow-credentials", "true");
+        res.setHeader("vary", "origin");
+        if (req.method === "OPTIONS") {
+          res
+            .writeHead(204, { "access-control-allow-methods": "GET, PATCH", "access-control-allow-headers": "content-type", "access-control-max-age": "600" })
+            .end();
+          return true;
+        }
+      }
       for (const r of compiled) {
         const m = url.pathname.match(r.re);
         if (!m || r.method !== req.method) continue;

@@ -139,6 +139,10 @@ const MIGRATIONS: Array<string | Migration> = [
    ALTER TABLE auth_sessions ADD COLUMN factor TEXT`,
   `-- 0.5.0: the sign-in screen goes straight to this provider (at most one).
    ALTER TABLE auth_providers ADD COLUMN auto_redirect INTEGER NOT NULL DEFAULT 0`,
+  `-- 0.11.0: the theme and language a person chose, kept with them so every browser shows the same (ADR 0033).
+   -- NULL until they choose.
+   ALTER TABLE auth_users ADD COLUMN theme TEXT CHECK (theme IN ('system', 'light', 'dark'));
+   ALTER TABLE auth_users ADD COLUMN locale TEXT`,
 ];
 
 /** Migrates forward; `until` stops after that many migrations, for tests of upgrades. */

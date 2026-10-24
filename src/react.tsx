@@ -1,6 +1,22 @@
 // Screens for @openasy/auth, built from @openasy/ui: the sign-in gate around a product's UI, and the Account, Members
 // and API tokens settings. They follow the Identity/Sign-in stories in the ui Storybook.
-import { Badge, Button, Callout, defineMessages, Panel, SelectField, Switch, TextField, useBrand, type Brand } from "@openasy/ui";
+import {
+  Badge,
+  Button,
+  Callout,
+  defineMessages,
+  LOCALE_STORAGE_KEY,
+  Panel,
+  SelectField,
+  Switch,
+  TextField,
+  toLocale,
+  useBrand,
+  useLocalePreference,
+  useThemePreference,
+  THEME_STORAGE_KEY,
+  type Brand,
+} from "@openasy/ui";
 import { ArrowLeft, Copy, Download, Fingerprint, KeyRound, LogIn, Pencil, Plus, ShieldCheck, Smartphone, Trash2 } from "lucide-react";
 import {
   createContext,
@@ -25,6 +41,7 @@ import {
   type Me,
   type Member,
   type Methods,
+  type Preferences,
   type Provider,
   type ProviderChange,
   type Role,
@@ -35,7 +52,7 @@ import en from "./messages/en.json" with { type: "json" };
 import tr from "./messages/tr.json" with { type: "json" };
 import { PRESETS } from "./presets.ts";
 
-export { auth, AuthApiError, type Me, type Member, type Provider, type Role } from "./client.ts";
+export { auth, AuthApiError, type Me, type Member, type Preferences, type Provider, type Role } from "./client.ts";
 
 /** `t(key, values)` in the BrandProvider locale. The words are in messages/<locale>.json. */
 const useT = defineMessages("auth", { en, tr, de });
@@ -818,20 +835,124 @@ function Gate({ children }: { children: ReactNode }) {
       return <MfaSetup productName={name} onDone={reload} onSignOut={signOut} />;
     case "in":
       return (
-        <AuthContext.Provider
-          value={{
-            me: stage.me,
-            users: methods?.users ?? false,
-            can: (role) => RANK.indexOf(stage.me.user.role) >= RANK.indexOf(role),
-            refresh: reload,
-            signOut,
-            expired: () => setStage({ k: "sign-in", error: t("signIn.sessionEnded"), expired: true }),
-          }}
+        <SignedIn
+          me={stage.me}
+          methods={methods}
+          reload={reload}
+          signOut={signOut}
+          expired={() => setStage({ k: "sign-in", error: t("signIn.sessionEnded"), expired: true })}
         >
           {children}
-        </AuthContext.Provider>
+        </SignedIn>
       );
   }
+}
+
+/** The person is signed in: their role, their preferences kept in step, and the product. */
+function SignedIn({
+  me,
+  methods,
+  reload,
+  signOut,
+  expired,
+  children,
+}: {
+  me: Me;
+  methods?: Methods;
+  reload: () => Promise<void>;
+  signOut: () => Promise<void>;
+  expired: () => void;
+  children: ReactNode;
+}) {
+  const name = usePreferenceSync(me);
+  return (
+    <AuthContext.Provider
+      value={{
+        me: name === me.user.name ? me : { ...me, user: { ...me.user, name } },
+        users: methods?.users ?? false,
+        can: (role) => RANK.indexOf(me.user.role) >= RANK.indexOf(role),
+        refresh: reload,
+        signOut,
+        expired,
+      }}
+    >
+      {children}
+    </AuthContext.Provider>
+  );
+}
+
+/** Whether this browser has a theme or a language of its own, not only the defaults. */
+const storedHere = (key: string) => {
+  try {
+    return window.localStorage.getItem(key) !== null;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Keeps this browser's theme and language the person's own (ADR 0033): kept in Identity when it manages them, here
+ * otherwise. They are read when the page opens and whenever the person comes back to it, so a change made in Identity
+ * or another product shows; a choice made here is sent there. What someone chose in this browser before anything was
+ * kept for them becomes theirs. Returns their name as kept there, which Identity may have changed since sign-in.
+ */
+function usePreferenceSync(me: Me): string {
+  const origin = me.managedBy?.url;
+  const [theme, setTheme] = useThemePreference();
+  const [locale, setLocale] = useLocalePreference();
+  const [name, setName] = useState(me.user.name);
+  // What the person's record says; only a choice that differs from it is sent.
+  const kept = useRef<{ theme: string | null; locale: string | null } | null>(null);
+  const current = useRef({ theme, locale });
+  current.current = { theme, locale };
+
+  const apply = useCallback(
+    (p: Preferences) => {
+      setName(p.name);
+      const adopt: { theme?: typeof theme; locale?: string } = {};
+      if (p.theme) {
+        if (p.theme !== current.current.theme) setTheme(p.theme);
+      } else if (storedHere(THEME_STORAGE_KEY)) adopt.theme = current.current.theme;
+      if (p.locale) {
+        if (toLocale(p.locale) !== current.current.locale) setLocale(toLocale(p.locale));
+      } else if (storedHere(LOCALE_STORAGE_KEY)) adopt.locale = current.current.locale;
+      kept.current = { theme: p.theme ?? adopt.theme ?? null, locale: p.locale ?? adopt.locale ?? null };
+      if (adopt.theme || adopt.locale) void auth.setPreferences(adopt, origin).catch(() => {});
+    },
+    [origin, setTheme, setLocale],
+  );
+
+  useEffect(() => {
+    let live = true;
+    // Unreachable, or signed out of Identity: this browser keeps what it has.
+    const read = () =>
+      void auth.preferences(origin).then(
+        (p) => live && apply(p),
+        () => {},
+      );
+    const back = () => document.visibilityState === "visible" && read();
+    read();
+    window.addEventListener("focus", read);
+    document.addEventListener("visibilitychange", back);
+    return () => {
+      live = false;
+      window.removeEventListener("focus", read);
+      document.removeEventListener("visibilitychange", back);
+    };
+  }, [origin, apply]);
+
+  useEffect(() => {
+    const k = kept.current;
+    if (!k) return;
+    const change: { theme?: typeof theme; locale?: string } = {};
+    if (theme !== (k.theme ?? "system")) change.theme = theme;
+    if (k.locale ? toLocale(k.locale) !== locale : storedHere(LOCALE_STORAGE_KEY)) change.locale = locale;
+    if (!change.theme && !change.locale) return;
+    kept.current = { theme: change.theme ?? k.theme, locale: change.locale ?? k.locale };
+    void auth.setPreferences(change, origin).catch(() => {});
+  }, [theme, locale, origin]);
+
+  return name;
 }
 
 // ---- Settings -----------------------------------------------------------------------------------------------------
@@ -873,7 +994,15 @@ const Cell = ({ children, mono = false }: { children: ReactNode; mono?: boolean 
 );
 
 /** The signed-in person: name, password, second factors, recovery codes and sessions. */
+/**
+ * Settings → Account. With Identity keeping the person (ADR 0033), their account is there: this sends them to it.
+ */
 export function AccountSettings() {
+  const { me } = useAuth();
+  return me.managedBy ? <KeptInIdentity url={`${me.managedBy.url}/account`} name={me.managedBy.name} what="account" /> : <OwnAccount />;
+}
+
+function OwnAccount() {
   const { me, refresh } = useAuth();
   const t = useT();
   const productName = useProductName();
@@ -1126,7 +1255,27 @@ function LinkBox({ title, link, expiresAt, onDone }: { title: string; link: stri
 }
 
 /** Settings → Members: invite, change roles, disable, reset and remove (admins; owners for owners). */
+/**
+ * Settings → Members. With Identity keeping the people (ADR 0033), who may sign in and with what role follows its people
+ * and groups: this sends admins there.
+ */
 export function MembersSettings() {
+  const { me } = useAuth();
+  return me.managedBy ? <KeptInIdentity url={`${me.managedBy.url}/people`} name={me.managedBy.name} what="members" /> : <OwnMembers />;
+}
+
+/** Sends the browser to Identity's page, with a link in case it does not go. */
+function KeptInIdentity({ url, name, what }: { url: string; name: string; what: "account" | "members" }) {
+  const t = useT();
+  useEffect(() => window.location.assign(url), [url]);
+  return (
+    <Callout tone="info" title={t(`keptInIdentity.${what}`, { name })}>
+      <a href={url}>{t("keptInIdentity.open", { name })}</a>
+    </Callout>
+  );
+}
+
+function OwnMembers() {
   const { me, users } = useAuth();
   const t = useT();
   const members = useList<Member>(auth.members);

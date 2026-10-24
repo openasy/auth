@@ -33,6 +33,11 @@ export interface OidcProvider {
    * failed sign-in, and with ?local=1. Only one provider may have it.
    */
   autoRedirect?: boolean;
+  /**
+   * The preset it was set up from, such as keycloak. With openasy-identity, Identity keeps the people who sign in
+   * through it: their account, their role through groups, their theme and their language (ADR 0033).
+   */
+  preset?: string;
 }
 
 export interface OidcClaims {

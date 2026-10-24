@@ -133,6 +133,17 @@ Settings pages: `AccountSettings` for everyone, `MembersSettings` and `TokensSet
 redirect URI, check the issuer and map groups to roles. With a provider set up, the first-start setup page also offers
 to become the owner through it.
 
+**With Identity (ADR 0033):** when the provider is `openasy-identity`, Identity keeps the people who sign in through
+it, and `GET /me` names it in `managedBy`. `AccountSettings` and `MembersSettings` send the browser to Identity's
+Account and People pages. `AuthGate` keeps the theme and language of the browser the person's own: it reads them from
+Identity's `GET /me/preferences` when the page opens and whenever the person comes back to it, and sends a choice made
+in the product there, so a change made in one product or in Identity shows in all of them. The name shown is Identity's
+too. Without Identity, they are kept by the product itself, so they follow the person from browser to browser. Identity
+passes `preferenceOrigins`, the origins of its applications, so their pages may call it with its session cookie; this
+works when the products share a site, such as `id.example.com` and `vpn.example.com`, and with Identity set in the
+environment. The product's content security policy names it in `connect-src`: `identityOrigin(process.env)` returns
+its origin.
+
 The screens speak English, Turkish and German, in the `locale` given to `BrandProvider` (`useLocalePreference()` from
 `@openasy/ui` 0.6.0 or later). Their words are in `src/messages/en.json`, `tr.json` and `de.json`, in i18next's `auth`
 namespace. Messages from the server and each provider's setup
@@ -165,6 +176,7 @@ All under `/api/v1/auth`. Errors are RFC 9457 problems with a stable `code`.
 | `POST /logout` | signed in |
 | `GET`, `POST /links/:token` | the holder of an invitation or password link |
 | `GET`, `PATCH /me`, `POST /me/password`, `GET /me/sessions`, `DELETE /me/sessions/:id` | signed in |
+| `GET`, `PATCH /me/preferences` | signed in, also from the pages of `preferenceOrigins` |
 | `POST /me/totp`, `POST /me/totp/confirm`, `DELETE /me/totp`, `POST /me/recovery-codes` | signed in |
 | `POST /me/passkeys/options`, `POST /me/passkeys`, `DELETE /me/passkeys/:id` | signed in |
 | `GET`, `POST /members`, `PATCH`, `DELETE /members/:id`, `POST /members/:id/reset` | admin (owners for owners) |

@@ -219,5 +219,10 @@
     "invitedOnly": "Invited people only",
     "environment": "Environment",
     "straightBadge": "Straight to"
+  },
+  "keptInIdentity": {
+    "account": "Your account is kept in {{name}}",
+    "members": "Who signs in, and with what role, is kept in {{name}}",
+    "open": "Open {{name}}"
   }
 }

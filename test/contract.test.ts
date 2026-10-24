@@ -112,6 +112,9 @@ describe("/api/v1/auth matches its OpenAPI description", () => {
     await addTotp(fresh, o);
     await check(o, "GET", "/api/v1/auth/me");
     await check(o, "PATCH", "/api/v1/auth/me", undefined, { name: "Olivia O." });
+    await check(o, "GET", "/api/v1/auth/me/preferences");
+    await check(o, "PATCH", "/api/v1/auth/me/preferences", undefined, { theme: "dark", locale: "tr" });
+    await check(o, "PATCH", "/api/v1/auth/me/preferences", undefined, { theme: "blue" });
     await check(o, "POST", "/api/v1/auth/me/password", undefined, { currentPassword: "wrong", newPassword: "a new long password" });
     await check(o, "POST", "/api/v1/auth/me/password", undefined, { currentPassword: PASSWORD, newPassword: "a new long password" });
     const sessions = (await check(o, "GET", "/api/v1/auth/me/sessions")).body as { sessions: Array<{ id: string }> };

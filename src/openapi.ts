@@ -97,6 +97,16 @@ const schemas: Record<string, Schema> = {
     hasPassword: { type: "boolean" },
     passkeys: { type: "array", items: obj({ id: str, name: str, createdAt: dateTime, lastUsedAt: nullable(dateTime) }) },
     recoveryCodesLeft: { type: "integer" },
+    managedBy: nullable({
+      ...obj({ name: str, url: { type: "string", format: "uri" } }),
+      description: "Identity, when people sign in through it: their account, role and preferences are kept there (ADR 0033).",
+    }),
+    preferences: ref("AuthPreferences"),
+  }),
+  AuthPreferences: obj({
+    name: str,
+    theme: nullable({ type: "string", enum: ["system", "light", "dark"], description: "null until the person chooses one." }),
+    locale: nullable({ type: "string", description: "A language tag such as tr; null until the person chooses one." }),
   }),
   AuthSession: obj({ id: str, method: str, ip: str, userAgent: str, createdAt: dateTime, lastSeenAt: dateTime, current: { type: "boolean" } }),
   AuthRecoveryCodes: obj({ recoveryCodes: { type: "array", items: str, minItems: 10, maxItems: 10 } }),
@@ -337,6 +347,23 @@ const paths = {
       security: signedIn,
       body: obj({ name: str }),
       responses: { "200": json(ref("AuthMember")), ...problems(...unsafe, 401) },
+    }),
+  },
+  "/api/v1/auth/me/preferences": {
+    get: op({
+      operationId: "authPreferences",
+      summary: "Your name, theme and language",
+      description:
+        "Identity also answers the pages of the applications that sign in through it, with its session cookie (CORS), so a choice made in one shows in all of them.",
+      security: signedIn,
+      responses: { "200": json(ref("AuthPreferences")), ...problems(401, 403) },
+    }),
+    patch: op({
+      operationId: "authSetPreferences",
+      summary: "Choose your theme or language",
+      security: signedIn,
+      body: obj({ theme: { type: "string", enum: ["system", "light", "dark"] }, locale: str }, []),
+      responses: { "200": json(ref("AuthPreferences")), ...problems(...unsafe, 401) },
     }),
   },
   "/api/v1/auth/me/password": {

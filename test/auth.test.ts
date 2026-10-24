@@ -1041,3 +1041,73 @@ describe("the install's brand (ADR 0053)", () => {
     }
   });
 });
+
+describe("preferences (ADR 0033)", () => {
+  const APP = "https://vpn.example.com";
+
+  it("keeps a person's theme and language, unset until they choose", async () => {
+    const app = await startProduct();
+    try {
+      const b = await createOwner(app);
+      expect((await b.json("/api/v1/auth/me/preferences")).body).toEqual({ name: "Olivia Owner", theme: null, locale: null });
+      const set = await b.json("/api/v1/auth/me/preferences", { method: "PATCH", body: { theme: "dark", locale: "tr" } });
+      expect(set).toEqual({ status: 200, body: { name: "Olivia Owner", theme: "dark", locale: "tr" } });
+      expect((await b.json("/api/v1/auth/me/preferences", { method: "PATCH", body: { theme: "system" } })).body).toMatchObject({
+        theme: "system",
+        locale: "tr",
+      });
+      expect((await b.json<{ preferences: object; managedBy: null }>("/api/v1/auth/me")).body).toMatchObject({
+        preferences: { theme: "system", locale: "tr" },
+        managedBy: null,
+      });
+      for (const body of [{ theme: "blue" }, { locale: "Turkish" }, { locale: null }, { color: "red" }])
+        expect((await b.json("/api/v1/auth/me/preferences", { method: "PATCH", body })).status).toBe(422);
+      expect((await app.browser().json("/api/v1/auth/me/preferences")).status).toBe(401);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("lets the pages of the applications it names read and change them with the session cookie", async () => {
+    const origins = new Set<string>();
+    const app = await startProduct({ preferenceOrigins: () => origins });
+    try {
+      const b = await createOwner(app);
+      const from = (o: string, method = "GET", body?: unknown) => b.fetch("/api/v1/auth/me/preferences", { method, body, headers: { origin: o } });
+      // Not named yet: no CORS headers, and a change is refused as cross-site.
+      expect((await from(APP)).headers.get("access-control-allow-origin")).toBeNull();
+      expect((await from(APP, "PATCH", { theme: "dark" })).status).toBe(403);
+      origins.add(APP);
+      const preflight = await from(APP, "OPTIONS");
+      expect(preflight.status).toBe(204);
+      expect(preflight.headers.get("access-control-allow-methods")).toBe("GET, PATCH");
+      const read = await from(APP);
+      expect(read.headers.get("access-control-allow-origin")).toBe(APP);
+      expect(read.headers.get("access-control-allow-credentials")).toBe("true");
+      expect((await from(APP, "PATCH", { theme: "dark" })).status).toBe(200);
+      // Only the preferences: every other route still refuses that origin.
+      expect((await b.fetch("/api/v1/auth/me", { method: "PATCH", body: { name: "Eve" }, headers: { origin: APP } })).status).toBe(403);
+      expect((await from("https://evil.example.com", "PATCH", { theme: "light" })).status).toBe(403);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("names Identity when people sign in through it", async () => {
+    const identity = { id: "sso", name: "OpenAsy Identity", issuer: "https://id.example.com", clientId: "vpn", preset: "openasy-identity" };
+    const app = await startProduct({ oidc: [identity] });
+    try {
+      const b = await createOwner(app);
+      expect((await b.json("/api/v1/auth/me")).body).toMatchObject({ managedBy: { name: "OpenAsy Identity", url: "https://id.example.com" } });
+    } finally {
+      await app.close();
+    }
+    const { oidcFromEnv } = await import("../src/env.ts");
+    const env = { OPENASY_OIDC_ISSUER: "https://id.example.com", OPENASY_OIDC_CLIENT_ID: "vpn", OPENASY_OIDC_PROVIDER: "openasy-identity" };
+    expect(oidcFromEnv(env)[0]).toMatchObject({ preset: "openasy-identity" });
+    const { identityOrigin } = await import("../src/env.ts");
+    expect(identityOrigin({ ...env, OPENASY_OIDC_ISSUER: "https://id.example.com/" })).toBe("https://id.example.com");
+    expect(identityOrigin({ ...env, OPENASY_OIDC_PROVIDER: "keycloak" })).toBeUndefined();
+    expect(identityOrigin({})).toBeUndefined();
+  });
+});

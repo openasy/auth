@@ -219,5 +219,10 @@
     "invitedOnly": "Yalnızca davet edilenler",
     "environment": "Ortam değişkeni",
     "straightBadge": "Doğrudan"
+  },
+  "keptInIdentity": {
+    "account": "Hesabınız {{name}} içinde tutuluyor",
+    "members": "Kimin hangi rolle giriş yapacağı {{name}} içinde tutuluyor",
+    "open": "{{name}} uygulamasını aç"
   }
 }
