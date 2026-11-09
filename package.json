@@ -56,7 +56,7 @@
     "@openasy/code-style": "https://github.com/openasy/code-style/releases/download/v0.1.2/openasy-code-style-0.1.2.tgz",
     "@openasy/ui": "https://github.com/openasy/ui/releases/download/v0.9.0/openasy-ui-0.9.0.tgz",
     "@testing-library/react": "^16.3.3",
-    "@types/node": "^26.6.5",
+    "@types/node": "^26.6.6",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "ajv": "^8.20.0",
