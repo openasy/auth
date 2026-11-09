@@ -37,6 +37,7 @@ import {
   passkeysSupported,
   signedOut,
   takeAuthParams,
+  type AccessFile,
   type ApiToken,
   type Me,
   type Member,
@@ -52,7 +53,7 @@ import en from "./messages/en.json" with { type: "json" };
 import tr from "./messages/tr.json" with { type: "json" };
 import { PRESETS } from "./presets.ts";
 
-export { auth, AuthApiError, type Me, type Member, type Preferences, type Provider, type Role } from "./client.ts";
+export { auth, AuthApiError, type AccessFile, type Me, type Member, type Preferences, type Provider, type Role } from "./client.ts";
 
 /** `t(key, values)` in the BrandProvider locale. The words are in messages/<locale>.json. */
 const useT = defineMessages("auth", { en, tr, de });
@@ -1317,6 +1318,9 @@ function OwnMembers() {
   const { me, users } = useAuth();
   const t = useT();
   const members = useList<Member>(auth.members);
+  // With the access file, roles come only from it: no invitations and no role changes here (ADR 0074).
+  const [file, setFile] = useState<AccessFile | null>();
+  useEffect(() => void auth.access().then(setFile, () => setFile(null)), []);
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [role, setRole] = useState<Role>("viewer");
@@ -1337,27 +1341,39 @@ function OwnMembers() {
 
   return (
     <div className="flex flex-col gap-4">
-      <Panel title={t("members.invite")} description={t("members.inviteBody")}>
-        <form
-          className="flex flex-wrap items-end gap-2"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void act(async () => {
-              const r = await auth.invite({ email, name: name || undefined, role });
-              setLink({ title: t("members.invitationFor", { email: r.member.email }), link: r.link, expiresAt: r.linkExpiresAt });
-              setEmail("");
-              setName("");
-            });
-          }}
-        >
-          <TextField label={t("common.email")} type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
-          <TextField label={t("common.name")} value={name} onChange={(e) => setName(e.target.value)} />
-          <SelectField label={t("common.role")} value={role} onChange={(e) => setRole(e.target.value as Role)} options={roleOptions} />
-          <Button type="submit" variant="primary" icon={<Plus />} disabled={!email.includes("@")}>
-            {t("members.invite")}
-          </Button>
-        </form>
-      </Panel>
+      {file && (
+        <Callout tone="info" title={t("members.fromFile")}>
+          {t("members.fromFileBody", { path: file.path })}
+        </Callout>
+      )}
+      {file?.error && (
+        <Callout tone="warning" title={t("members.fromFile")}>
+          {t("members.fileError", { error: file.error })}
+        </Callout>
+      )}
+      {file === null && (
+        <Panel title={t("members.invite")} description={t("members.inviteBody")}>
+          <form
+            className="flex flex-wrap items-end gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void act(async () => {
+                const r = await auth.invite({ email, name: name || undefined, role });
+                setLink({ title: t("members.invitationFor", { email: r.member.email }), link: r.link, expiresAt: r.linkExpiresAt });
+                setEmail("");
+                setName("");
+              });
+            }}
+          >
+            <TextField label={t("common.email")} type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+            <TextField label={t("common.name")} value={name} onChange={(e) => setName(e.target.value)} />
+            <SelectField label={t("common.role")} value={role} onChange={(e) => setRole(e.target.value as Role)} options={roleOptions} />
+            <Button type="submit" variant="primary" icon={<Plus />} disabled={!email.includes("@")}>
+              {t("members.invite")}
+            </Button>
+          </form>
+        </Panel>
+      )}
       {link && <LinkBox {...link} onDone={() => setLink(undefined)} />}
       <Problem error={members.error} />
       <Panel title={t("members.title")} flush>
@@ -1372,7 +1388,12 @@ function OwnMembers() {
                 <Cell>{m.name}</Cell>
                 <Cell mono>{m.email}</Cell>
                 <Cell>
-                  {manageable ? (
+                  {file ? (
+                    <>
+                      {roleName(t, m.role)}
+                      {m.accessRule && <span className="block text-xs text-fg-muted">{t("members.rule", { rule: m.accessRule })}</span>}
+                    </>
+                  ) : manageable ? (
                     <SelectField
                       aria-label={t("members.roleOf", { email: m.email })}
                       value={m.role}

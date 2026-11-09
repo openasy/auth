@@ -23,6 +23,7 @@ import {
   sha256,
   verifyPassword,
 } from "./crypto.ts";
+import { accessFromEnv, grantFor, watchAccess, type AccessFileState, type AccessGrant, type AccessRule } from "./access.ts";
 import { migrate } from "./db.ts";
 import { brandFromEnv, type BrandSettings } from "./env.ts";
 import { AuthError, clientIp, cookie, email as readEmail, parseCookies, readJson, SECURITY_HEADERS, sendJson, sendProblem, str } from "./http.ts";
@@ -36,6 +37,7 @@ export type { OidcProvider } from "./oidc.ts";
 export { PRESETS, preset, type ProviderPreset } from "./presets.ts";
 export { brandFromEnv, identityOrigin, oidcFromEnv, readSecretsKey, type BrandSettings } from "./env.ts";
 export { authOpenApi, mergeOpenApi } from "./openapi.ts";
+export { accessFromEnv, grantFor, parseAccess, type AccessFileState, type AccessGrant, type AccessRule } from "./access.ts";
 
 export interface AuthOptions {
   /** The product's SQLite database. The auth tables are added to it with an `auth_` prefix. */
@@ -70,6 +72,18 @@ export interface AuthOptions {
     managedBy: (userId: string) => string | undefined;
     verify: (userId: string, password: string) => Promise<boolean>;
   };
+  /**
+   * The access file (ADR 0074): who has which role in this product. Read from OPENASY_ACCESS when not given; false
+   * turns it off. While it is in use, roles come only from it, and Members no longer changes them.
+   */
+  access?: string | false;
+  /** How often the access file is checked for a change, in milliseconds. Default 60 000. */
+  accessEveryMs?: number;
+  /**
+   * Someone's groups for the access file, when this product keeps them itself, as Identity does for its directory.
+   * Without it, the groups are the ones each provider sent at the person's last sign-in.
+   */
+  groupsOf?: (userId: string) => string[];
   /** After someone signs in through an identity provider, with the groups it sent; Identity keeps them (ADR 0033). */
   onOidcSignIn?: (signIn: { userId: string; provider: string; groups: string[] }) => void;
   /** Providers from the environment. More can be added under Settings, Sign-in, and stored in the database. */
@@ -111,7 +125,9 @@ export interface AuthEvent {
     | "token-revoked"
     | "provider-added"
     | "provider-updated"
-    | "provider-removed";
+    | "provider-removed"
+    | "access-applied"
+    | "access-refused";
   /** Who did it, when known. */
   actor?: string;
   /** Whom it was done to, when that is someone else. */
@@ -131,6 +147,8 @@ export interface User {
   lastSignInAt: string | null;
   mfa: { totp: boolean; passkeys: number };
   providers: string[];
+  /** With the access file, the rule the role comes from: "rule 2: group ops". Null without it. */
+  accessRule: string | null;
 }
 
 /** The second factor a session was opened with, or added during it. A passkey alone is method "passkey" and factor "passkey". */
@@ -151,6 +169,9 @@ interface UserRow {
   last_sign_in_at: string | null;
   theme: "system" | "light" | "dark" | null;
   locale: string | null;
+  groups_at: string | null;
+  access_rule: string | null;
+  access_disabled: number;
 }
 
 interface ProviderRow {
@@ -265,6 +286,7 @@ export function createAuth(opts: AuthOptions) {
       lastSignInAt: row.last_sign_in_at,
       mfa: { totp: hasTotp(row.id), passkeys: passkeyCount(row.id) },
       providers: ids.map((i) => i.provider),
+      accessRule: row.access_rule,
     };
   }
 
@@ -311,6 +333,101 @@ export function createAuth(opts: AuthOptions) {
     db.prepare("UPDATE auth_challenges SET data = ? WHERE id_hash = ?").run(JSON.stringify(data), idHash);
   const revokeSessions = (userId: string, exceptId?: string) =>
     db.prepare("DELETE FROM auth_sessions WHERE user_id = ? AND id != ?").run(userId, exceptId ?? "");
+
+  // ---- The access file (ADR 0074) -------------------------------------------------------------------------------
+
+  const accessPath = opts.access === false ? undefined : (opts.access ?? accessFromEnv(process.env));
+  /** The rules in force: the file's last good version, kept so that a restart with a broken file still applies it. */
+  let rules: AccessRule[] | undefined;
+  if (accessPath) {
+    const saved = db.prepare("SELECT rules FROM auth_access WHERE id = 1 AND path = ?").get(accessPath) as { rules: string } | undefined;
+    rules = saved && (JSON.parse(saved.rules) as AccessRule[]);
+  }
+  const fromFile = () => new AuthError(409, "conflict", `Roles come from the access file (${accessPath}): change them there.`);
+
+  /**
+   * Someone's groups for the access file, or undefined while they are not known: they sign in through a provider and
+   * have not done so since this version, so their role waits for their next sign-in rather than being taken away.
+   */
+  function groupsOfUser(row: UserRow): string[] | undefined {
+    if (opts.groupsOf) return opts.groupsOf(row.id);
+    if (!row.groups_at && db.prepare("SELECT 1 FROM auth_identities WHERE user_id = ?").get(row.id)) return undefined;
+    return (db.prepare("SELECT DISTINCT name FROM auth_user_groups WHERE user_id = ?").all(row.id) as Array<{ name: string }>).map((r) => r.name);
+  }
+
+  const grantOf = (row: UserRow, groups: string[]) => grantFor(rules!, product, row.email, groups, users);
+
+  /** Gives someone the role the file gives them, or takes their access away when it gives them none. */
+  function applyGrant(row: UserRow, g: AccessGrant | undefined, method: string, ip: string) {
+    const changes: string[] = [];
+    // In a product with users, such as Identity, someone the file gives nothing is one of its users.
+    const role = g?.role ?? (users ? "user" : undefined);
+    if (role) {
+      if (role !== row.role) {
+        db.prepare("UPDATE auth_users SET role = ? WHERE id = ?").run(role, row.id);
+        changes.push(`role ${row.role} -> ${role}`);
+      }
+      if (row.access_disabled) {
+        const linked = !!row.password_hash || !!db.prepare("SELECT 1 FROM auth_identities WHERE user_id = ?").get(row.id);
+        db.prepare("UPDATE auth_users SET status = ?, access_disabled = 0 WHERE id = ?").run(linked ? "active" : "invited", row.id);
+        changes.push("access given by the access file");
+      }
+    } else if (row.status !== "disabled") {
+      db.prepare("UPDATE auth_users SET status = 'disabled', access_disabled = 1 WHERE id = ?").run(row.id);
+      revokeSessions(row.id);
+      changes.push("no access in the access file");
+    }
+    if ((g?.rule ?? null) !== row.access_rule) db.prepare("UPDATE auth_users SET access_rule = ? WHERE id = ?").run(g?.rule ?? null, row.id);
+    // A token never has more than the person who made it.
+    for (const t of db.prepare("SELECT id, name, role FROM auth_tokens WHERE created_by = ?").all(row.id) as Array<{ id: string; name: string; role: Role }>) {
+      if (role && atLeast(role, t.role)) continue;
+      db.prepare("DELETE FROM auth_tokens WHERE id = ?").run(t.id);
+      emit({ type: "token-revoked", target: t.id, method, ip, detail: `${t.name}: its creator no longer has the ${t.role} role` });
+    }
+    if (changes.length) emit({ type: "member-updated", target: row.id, method, ip, detail: changes.join(", ") });
+  }
+
+  /** Gives everyone whose groups are known the role the rules in force give them. */
+  function reapplyAccess() {
+    if (!rules) return;
+    for (const row of db.prepare("SELECT * FROM auth_users").all() as unknown as UserRow[]) {
+      const groups = groupsOfUser(row);
+      if (groups) applyGrant(row, grantOf(row, groups), "access-file", "");
+    }
+  }
+
+  const accessFile = accessPath
+    ? watchAccess(
+        accessPath,
+        product,
+        (next) => {
+          rules = next;
+          db.prepare(
+            "INSERT INTO auth_access (id, path, rules, applied_at) VALUES (1, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET path = excluded.path, rules = excluded.rules, applied_at = excluded.applied_at",
+          ).run(accessPath, JSON.stringify(next), iso());
+          reapplyAccess();
+        },
+        {
+          everyMs: opts.accessEveryMs,
+          onChange: (s) =>
+            emit(
+              s.error
+                ? {
+                    type: "access-refused",
+                    ip: "",
+                    detail: `${s.error} ${rules ? "Its last good version stays." : "Nobody new can sign in until it is fixed."}`,
+                  }
+                : { type: "access-applied", ip: "", detail: `${s.rules} rules from ${s.path}` },
+            ),
+        },
+      )
+    : undefined;
+
+  /** The access file as Settings shows it: the version in force, and why the file as it is now is not, if it is not. */
+  function accessView(s: AccessFileState) {
+    const saved = db.prepare("SELECT applied_at FROM auth_access WHERE id = 1 AND path = ?").get(s.path) as { applied_at: string } | undefined;
+    return { path: s.path, appliedAt: saved?.applied_at ?? null, rules: rules?.length ?? 0, error: s.error };
+  }
 
   // ---- Throttling -----------------------------------------------------------------------------------------------
 
@@ -525,6 +642,15 @@ export function createAuth(opts: AuthOptions) {
 
   // ---- OIDC -----------------------------------------------------------------------------------------------------
 
+  /** The groups a provider sent, so a change to the access file gives the person their role without a sign-in. */
+  function keepGroups(userId: string, providerId: string, c: OidcClaims) {
+    if (c.groupsOverage) return;
+    db.prepare("DELETE FROM auth_user_groups WHERE user_id = ? AND provider = ?").run(userId, providerId);
+    const add = db.prepare("INSERT OR IGNORE INTO auth_user_groups (user_id, provider, name) VALUES (?, ?, ?)");
+    for (const g of c.groups) add.run(userId, providerId, g);
+    db.prepare("UPDATE auth_users SET groups_at = ? WHERE id = ?").run(iso(), userId);
+  }
+
   function oidcUser(p: OidcProvider, c: OidcClaims, ip: string): UserRow {
     const refuse = (why: string) => {
       emit({ type: "sign-in-failed", method: `oidc:${p.id}`, ip, detail: why });
@@ -533,24 +659,40 @@ export function createAuth(opts: AuthOptions) {
     if (p.allowedDomains && !(c.email && c.emailVerified && p.allowedDomains.includes(c.email.split("@")[1]!))) {
       throw refuse(`Your ${p.name} account is not in an allowed domain.`);
     }
-    // Without the groups, the mapping would give the wrong role: refuse and say how to fix it at the provider.
-    if (p.roleMapping && c.groupsOverage)
+    // Without the groups, the mapping or the access file would give the wrong role: refuse and say how to fix it at
+    // the provider.
+    if ((p.roleMapping || accessPath) && c.groupsOverage)
       throw refuse(
         `${p.name} left your groups out of the token because there are too many. An admin can send only the groups assigned to ${productName}'s registration.`,
       );
-    const mapped = p.roleMapping ? highest(c.groups.map((g) => p.roleMapping![g]).filter(roleAllowed)) : undefined;
     const identity = db.prepare("SELECT user_id FROM auth_identities WHERE provider = ? AND subject = ?").get(p.id, c.subject) as
       { user_id: string } | undefined;
     let user = identity ? userRow(identity.user_id) : undefined;
     // An existing person is linked only by an email the provider says it has verified.
     if (!user && c.email && c.emailVerified) user = userByEmail(c.email);
-    if (!user) {
-      const role = mapped ?? p.defaultRole;
-      if (!role || !c.email) throw refuse(`You have no access to ${productName}. Ask an admin to invite you.`);
-      user = insertUser({ email: c.email, name: c.name ?? c.email, role, status: "active" });
+    // Someone the access file left without access is let in again when it gives them a role, below.
+    if (user?.status === "disabled" && !(accessPath && user.access_disabled)) throw refuse("Your account is disabled.");
+
+    if (accessPath) {
+      // The access file decides (ADR 0074); the provider's role mapping is not used.
+      const groupsOf = (row?: UserRow) => [...new Set([...c.groups, ...(row && opts.groupsOf ? opts.groupsOf(row.id) : [])])];
+      if (!rules) {
+        if (!user || user.access_disabled) throw refuse(`${productName} cannot read its access file, so it lets nobody new in. Ask an admin to fix it.`);
+      } else {
+        const g = grantFor(rules, product, user?.email ?? c.email ?? "", groupsOf(user), users);
+        if (!g && !users) throw refuse(`You have no access to ${productName}. Ask an admin to add you to the access file.`);
+        if (!user) {
+          if (!c.email) throw refuse(`${p.name} did not say your email address. Allow the email scope for ${productName}.`);
+          user = insertUser({ email: c.email, name: c.name ?? c.email, role: g?.role ?? "user", status: "active" });
+        }
+      }
     } else {
-      if (user.status === "disabled") throw refuse("Your account is disabled.");
-      if (p.roleMapping) {
+      const mapped = p.roleMapping ? highest(c.groups.map((g) => p.roleMapping![g]).filter(roleAllowed)) : undefined;
+      if (!user) {
+        const role = mapped ?? p.defaultRole;
+        if (!role || !c.email) throw refuse(`You have no access to ${productName}. Ask an admin to invite you.`);
+        user = insertUser({ email: c.email, name: c.name ?? c.email, role, status: "active" });
+      } else if (p.roleMapping) {
         const role = mapped ?? p.defaultRole;
         if (!role) throw refuse(`You are in none of the groups that give access to ${productName}.`);
         // The groups decide the role, except that the last owner is never demoted by the IdP.
@@ -559,13 +701,19 @@ export function createAuth(opts: AuthOptions) {
           emit({ type: "member-updated", target: user.id, method: `oidc:${p.id}`, ip, detail: `role ${user.role} -> ${role} from groups` });
         }
       }
-      if (user.status === "invited") db.prepare("UPDATE auth_users SET status = 'active' WHERE id = ?").run(user.id);
-      // The provider keeps the person's name, so a change made there shows here at the next sign-in.
-      const name = c.name?.trim().slice(0, 128);
-      if (name && name !== user.name) {
-        db.prepare("UPDATE auth_users SET name = ? WHERE id = ?").run(name, user.id);
-        emit({ type: "member-updated", target: user.id, method: `oidc:${p.id}`, ip, detail: "name from the provider" });
-      }
+    }
+
+    keepGroups(user.id, p.id, c);
+    if (user.status === "invited") db.prepare("UPDATE auth_users SET status = 'active' WHERE id = ?").run(user.id);
+    if (accessPath && rules) {
+      const row = userRow(user.id)!;
+      applyGrant(row, grantOf(row, [...new Set([...c.groups, ...(groupsOfUser(row) ?? [])])]), `oidc:${p.id}`, ip);
+    }
+    // The provider keeps the person's name, so a change made there shows here at the next sign-in.
+    const name = c.name?.trim().slice(0, 128);
+    if (name && name !== user.name) {
+      db.prepare("UPDATE auth_users SET name = ? WHERE id = ?").run(name, user.id);
+      emit({ type: "member-updated", target: user.id, method: `oidc:${p.id}`, ip, detail: "name from the provider" });
     }
     db.prepare(
       "INSERT INTO auth_identities (provider, subject, user_id, email, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (provider, subject) DO UPDATE SET email = excluded.email, last_used_at = excluded.last_used_at",
@@ -614,6 +762,17 @@ export function createAuth(opts: AuthOptions) {
 
   const preferencesOf = (row: UserRow) => ({ name: row.name, theme: row.theme, locale: row.locale });
 
+  /**
+   * The first person's role: owner, or with the access file the role it gives them, so the setup link never gives
+   * more than the file does (ADR 0074).
+   */
+  function setupRole(email: string, groups: string[]): Role {
+    if (!accessPath) return "owner";
+    const g = rules && grantFor(rules, product, email, groups, users);
+    if (!g || g.role === "user") throw new AuthError(409, "conflict", `The access file gives ${email} no role in ${productName}: add them to it first.`);
+    return g.role;
+  }
+
   /** The first person, through a provider and the one-time setup link: they become the owner (ADR 0013). */
   function oidcOwner(p: OidcProvider, c: OidcClaims, setupHash: string, ip: string): UserRow {
     const setup = db.prepare("SELECT expires_at FROM auth_challenges WHERE id_hash = ? AND kind = 'setup'").get(setupHash) as
@@ -623,7 +782,7 @@ export function createAuth(opts: AuthOptions) {
     if (!c.email) throw new AuthError(403, "forbidden", `${p.name} did not say your email address. Allow the email scope for ${productName}.`);
     if (p.allowedDomains && !(c.emailVerified && p.allowedDomains.includes(c.email.split("@")[1]!)))
       throw new AuthError(403, "forbidden", `Your ${p.name} account is not in an allowed domain.`);
-    const user = insertUser({ email: c.email, name: c.name ?? c.email, role: "owner", status: "active" });
+    const user = insertUser({ email: c.email, name: c.name ?? c.email, role: setupRole(c.email, c.groups), status: "active" });
     dropChallenge(setupHash);
     db.prepare("INSERT INTO auth_identities (provider, subject, user_id, email, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?)").run(
       p.id,
@@ -633,8 +792,10 @@ export function createAuth(opts: AuthOptions) {
       iso(),
       iso(),
     );
+    keepGroups(user.id, p.id, c);
+    if (accessPath) applyGrant(userRow(user.id)!, grantOf(user, c.groups), `oidc:${p.id}`, ip);
     emit({ type: "setup", actor: user.id, method: `oidc:${p.id}`, ip });
-    return user;
+    return userRow(user.id)!;
   }
 
   const provider = (id: string) => {
@@ -718,6 +879,8 @@ export function createAuth(opts: AuthOptions) {
       if (!roleAllowed(b.defaultRole)) throw bad(`defaultRole must be ${roleList} or null.`);
       defaultRole = b.defaultRole;
     }
+    // With the access file, a provider's groups give no role of their own: the file decides (ADR 0074).
+    if (accessPath && ((b.roleMapping !== undefined && Object.keys(roleMapping).length) || (b.defaultRole !== undefined && defaultRole))) throw fromFile();
     if (b.enabled !== undefined && typeof b.enabled !== "boolean") throw bad("enabled must be true or false.");
     if (b.autoRedirect !== undefined && typeof b.autoRedirect !== "boolean") throw bad("autoRedirect must be true or false.");
     return {
@@ -833,14 +996,16 @@ export function createAuth(opts: AuthOptions) {
         // With password sign-in off, the owner signs in through a provider: a password nobody can use is no owner.
         if (!passwords && providers().length)
           throw new AuthError(409, "conflict", `Password sign-in is off: continue with ${providers()[0]!.name} to become the owner.`);
+        const email = readEmail(b);
         const user = insertUser({
-          email: readEmail(b),
+          email,
           name: str(b, "name", { max: 128 }).trim(),
-          role: "owner",
+          role: setupRole(email, []),
           status: "active",
           passwordHash: await hashPassword(newPassword(b)),
         });
         dropChallenge(ch.idHash);
+        if (accessPath) applyGrant(user, grantOf(user, []), "setup", clientIp(req));
         emit({ type: "setup", actor: user.id, ip: clientIp(req) });
         signedIn(res, req, user, "password", false);
       },
@@ -1317,11 +1482,22 @@ export function createAuth(opts: AuthOptions) {
         return { members: rows.map(toUser) };
       },
     },
+    // Where roles come from: the access file, when it is in use (ADR 0074).
+    {
+      method: "GET",
+      path: "/access",
+      handle: ({ req }) => {
+        authorize(req, "admin");
+        return { file: accessFile ? accessView(accessFile.state) : null };
+      },
+    },
     {
       method: "POST",
       path: "/members",
       handle: async ({ req, res, body }) => {
         const p = sessionPrincipal(req, "admin");
+        // With the access file, people get in through their provider with the role it gives them (ADR 0074).
+        if (accessPath) throw fromFile();
         const b = await body();
         const role = memberRole(b);
         mayManage(p.role, role);
@@ -1343,6 +1519,7 @@ export function createAuth(opts: AuthOptions) {
         const b = await body();
         const changes: string[] = [];
         if (b.role !== undefined) {
+          if (accessPath) throw fromFile();
           const role = memberRole(b);
           mayManage(p.role, role);
           if (target.role === "owner" && role !== "owner" && activeOwnersExcept(target.id) === 0)
@@ -1654,6 +1831,17 @@ export function createAuth(opts: AuthOptions) {
     },
 
     authorize,
+
+    /**
+     * The access file (ADR 0074), when it is in use: `read()` checks it for a change now, and `reapply()` gives
+     * everyone the role it gives them again, for a product whose `groupsOf` changed, such as Identity's directory.
+     */
+    access: accessFile && {
+      state: () => accessView(accessFile.state),
+      read: accessFile.read,
+      reapply: reapplyAccess,
+      stop: accessFile.stop,
+    },
 
     /** Route names for metrics: the matched pattern, never ids or tokens. */
     routeName(req: IncomingMessage): string | undefined {

@@ -143,6 +143,25 @@ const MIGRATIONS: Array<string | Migration> = [
    -- NULL until they choose.
    ALTER TABLE auth_users ADD COLUMN theme TEXT CHECK (theme IN ('system', 'light', 'dark'));
    ALTER TABLE auth_users ADD COLUMN locale TEXT`,
+  `-- 0.12.0: roles from the access file (ADR 0074). The groups each provider sent at the last sign-in, so a change to
+   -- the file gives people their role without signing in again; groups_at says they are known. access_rule is the
+   -- rule a role comes from; access_disabled marks people the file left without access, enabled again when it gives
+   -- them one. auth_access keeps the file's last good version, so a restart with a broken file still applies it.
+   CREATE TABLE auth_user_groups (
+     user_id TEXT NOT NULL REFERENCES auth_users (id) ON DELETE CASCADE,
+     provider TEXT NOT NULL,
+     name TEXT NOT NULL,
+     PRIMARY KEY (user_id, provider, name)
+   );
+   ALTER TABLE auth_users ADD COLUMN groups_at TEXT;
+   ALTER TABLE auth_users ADD COLUMN access_rule TEXT;
+   ALTER TABLE auth_users ADD COLUMN access_disabled INTEGER NOT NULL DEFAULT 0;
+   CREATE TABLE auth_access (
+     id INTEGER PRIMARY KEY CHECK (id = 1),
+     path TEXT NOT NULL,
+     rules TEXT NOT NULL,
+     applied_at TEXT NOT NULL
+   )`,
 ];
 
 /** Migrates forward; `until` stops after that many migrations, for tests of upgrades. */

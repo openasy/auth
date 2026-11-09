@@ -151,7 +151,11 @@
     "reset": "Reset",
     "disable": "Disable",
     "enable": "Enable",
-    "confirmRemove": "Remove {{email}}?"
+    "confirmRemove": "Remove {{email}}?",
+    "fromFile": "Roles come from the access file",
+    "fromFileBody": "{{path}} gives everyone their role here. Change it there; it is read again within a minute.",
+    "fileError": "The access file has a mistake; its last good version stays: {{error}}",
+    "rule": "From {{rule}}"
   },
   "tokens": {
     "new": "New token",

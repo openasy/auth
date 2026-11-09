@@ -14,6 +14,7 @@ Each product embeds it and keeps its own users in its own SQLite file, so a prod
 | OIDC | Any OpenID Connect provider (Entra ID, Okta, Google, Keycloak, Authentik, Zitadel, OpenAsy Identity). Code flow with PKCE, state and nonce; groups mapped to roles on every sign-in |
 | Sessions | Opaque id in an `HttpOnly`, `SameSite=Lax`, `__Host-` cookie; only its hash is stored. 60 minutes idle, 12 hours at most, listed and revocable. Bound to the browser and operating system: a copied cookie used elsewhere ends the session |
 | Roles | Owner, Admin, Editor, Viewer, per product. At least one owner always remains. With `users: true`, also User: people who use the product's applications, such as Identity's, without managing it |
+| Access file | `OPENASY_ACCESS`: one YAML file gives every product's roles to groups and people, and is the only way in while it is used (ADR 0074) |
 | API tokens | One product, one role (at most the creator's), always an expiry, shown once, only the hash is stored |
 | CSRF | Unsafe requests with the session cookie must come from the product's origin |
 
@@ -89,6 +90,42 @@ environment, `OPENASY_OIDC_PROVIDER=keycloak` makes them the defaults; the other
 - **Too many groups:** Microsoft Entra ID leaves the groups out of a token when there are too many. With a role
   mapping, the person is refused with what to change, rather than given the wrong role.
 
+### The access file
+
+`OPENASY_ACCESS` names a YAML file that says who has which role in each product, the same file for every product
+(ADR 0074). The install keeps it in `inventory/access.yaml` next to the hosts and endpoints files (ADR 0052) and may
+review changes to it in git; it holds no secret.
+
+```yaml
+access:
+  - person: ayse@example.com # one person, by their email address
+    products: "*" # every product
+    role: owner
+  - group: openasy-admins # a group as the sign-in provider sends it
+    products: "*"
+    role: admin
+  - group: ops
+    products: [infra, logs, uptime] # product ids, as in OPENASY_PRODUCTS
+    role: editor
+```
+
+- **The highest role wins.** A person gets the highest role any rule gives them in the product. `user` counts only
+  where the product has users, such as Identity. Each product needs at least one owner in the file.
+- **Groups come from the provider.** They are the names in the token, so the file works with Identity, Keycloak,
+  Entra ID or any other provider. Each sign-in keeps the groups the provider sent, so a change to the file reaches
+  people without a new sign-in. A product that keeps groups itself, as Identity does, passes `groupsOf`.
+- **The file is the only way in.** While it is used, the role mapping of providers is not, and Settings, Members can
+  no longer invite people or change roles; it shows the rule each role comes from. Disabling someone at once, new
+  password links and API tokens stay there. A token never has more than its creator: one that does is revoked.
+- **A change applies within a minute.** The file is checked every minute. People get their new role at once; people it
+  no longer names are disabled and signed out, and let in again when it names them. A file with a mistake leaves its
+  last good version in place, even across a restart, and Members says what to fix. People who signed in through a
+  provider before this version keep their role until their next sign-in, when their groups are known.
+- **First start.** The setup link creates the account of someone the file gives a role, with that role.
+
+`GET /api/v1/auth/access` returns the file's state; `auth.access.read()` checks it now and `auth.access.reapply()`
+gives everyone their role again after `groupsOf` changed.
+
 The OpenAPI description of the routes is `authOpenApi()`; serve `mergeOpenApi(yourSpec)` so your API reference includes
 sign-in. `test/contract.test.ts` checks every response against it. Each product reads the secrets key with
 `readSecretsKey(path)` and one OIDC provider from its environment with `oidcFromEnv(process.env, "VULNS_")`. The
@@ -102,7 +139,7 @@ client differs, because each product is its own application at the provider:
 | `OPENASY_OIDC_NAME` | On the button: "Continue with ...". Default `SSO` |
 | `OPENASY_OIDC_SCOPES` | Default `openid email profile`; add the scope that carries groups |
 | `OPENASY_OIDC_GROUPS_CLAIM` | Default `groups`; a dotted path such as `realm_access.roles` reads nested claims |
-| `OPENASY_OIDC_ROLE_MAPPING` | `openasy-admins=admin,staff=viewer`: the role follows the groups on every sign-in |
+| `OPENASY_OIDC_ROLE_MAPPING` | `openasy-admins=admin,staff=viewer`: the role follows the groups on every sign-in. Not used with `OPENASY_ACCESS` |
 | `OPENASY_OIDC_DEFAULT_ROLE` | Role for people nobody invited. Unset: only invited people and mapped groups get in |
 | `OPENASY_OIDC_ALLOWED_DOMAINS` | Comma-separated email domains, for providers anyone can join (Google) |
 | `OPENASY_OIDC_AUTO_REDIRECT` | `true`: the sign-in page opens the provider straight away |

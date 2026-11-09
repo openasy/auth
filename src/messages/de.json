@@ -151,7 +151,11 @@
     "reset": "Zurücksetzen",
     "disable": "Deaktivieren",
     "enable": "Aktivieren",
-    "confirmRemove": "{{email}} entfernen?"
+    "confirmRemove": "{{email}} entfernen?",
+    "fromFile": "Rollen kommen aus der Zugriffsdatei",
+    "fromFileBody": "{{path}} gibt hier allen ihre Rolle. Ändern Sie sie dort; sie wird innerhalb einer Minute neu gelesen.",
+    "fileError": "Die Zugriffsdatei enthält einen Fehler; ihre letzte gültige Fassung gilt weiter: {{error}}",
+    "rule": "Aus {{rule}}"
   },
   "tokens": {
     "new": "Neues Token",

@@ -71,6 +71,16 @@ const schemas: Record<string, Schema> = {
     lastSignInAt: nullable(dateTime),
     mfa: obj({ totp: { type: "boolean" }, passkeys: { type: "integer" } }),
     providers: { type: "array", items: str, description: "Identity providers this person has signed in with." },
+    accessRule: {
+      ...nullable(str),
+      description: 'With the access file (OPENASY_ACCESS), the rule the role comes from, such as "rule 2: group ops"; null without it.',
+    },
+  }),
+  AuthAccessFile: obj({
+    path: str,
+    appliedAt: { ...nullable(dateTime), description: "When the version in force was applied; null until one is." },
+    rules: { type: "integer", description: "Rules in the version in force." },
+    error: { ...nullable(str), description: "Why the file as it is now is not applied; its last good version stays." },
   }),
   AuthSignedIn: obj({ status: { const: "signed-in" }, user: ref("AuthMember"), mfaSetupRequired: { type: "boolean" } }),
   AuthMfaRequired: obj({
@@ -454,6 +464,17 @@ const paths = {
       security: signedIn,
       params: ["id"],
       responses: { "204": empty("Removed"), ...problems(401, 403, 404) },
+    }),
+  },
+  "/api/v1/auth/access": {
+    get: op({
+      operationId: "authAccess",
+      summary: "Where roles come from",
+      description:
+        "The access file (OPENASY_ACCESS, ADR 0074) when it is in use, or null. While it is, roles come only from it: inviting members, changing their role and a provider's role mapping are refused with 409.",
+      security: admin,
+      role: "admin",
+      responses: { "200": json(obj({ file: nullable(ref("AuthAccessFile")) })), ...problems(401, 403) },
     }),
   },
   "/api/v1/auth/members": {

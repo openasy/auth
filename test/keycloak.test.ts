@@ -1,5 +1,8 @@
 // Sign-in through a real Keycloak with the realm in examples/keycloak (ADR 0002: every method is tested against a real
 // server). Runs when KEYCLOAK_URL is set, as in CI; examples/keycloak/test.sh starts Keycloak and runs it.
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { PRESETS } from "../src/presets.ts";
 import { startProduct, type Browser } from "./helpers.ts";
@@ -107,6 +110,62 @@ describe.skipIf(!KC)("sign-in through Keycloak", () => {
       expect(app.db.prepare("SELECT COUNT(*) AS n FROM auth_users WHERE email = ?").get(`noel-${run}@example.com`)).toEqual({ n: 0 });
     } finally {
       await app.close();
+    }
+  });
+
+  it("gives the roles the access file gives Keycloak's groups, and follows a change to it at once", async () => {
+    const keycloak = PRESETS.find((p) => p.id === "keycloak")!;
+    const dir = mkdtempSync(join(tmpdir(), "openasy-kc-access-"));
+    const path = join(dir, "access.yaml");
+    const owner = 'access:\n  - person: owner@example.com\n    products: "*"\n    role: owner\n';
+    writeFileSync(path, `${owner}  - group: openasy-admins\n    products: [test]\n    role: admin\n`);
+    const app = await startProduct(
+      {
+        allowInsecureIssuers: true,
+        access: path,
+        oidc: [
+          {
+            id: "keycloak",
+            name: keycloak.name,
+            issuer: `${KC}/realms/openasy`,
+            clientId: "openasy-vpn",
+            clientSecret: process.env.OPENASY_VPN_SECRET,
+            scopes: keycloak.scopes,
+            groupsClaim: keycloak.groupsClaim,
+            allowInsecure: true,
+          },
+        ],
+      },
+      PRODUCT_PORT,
+    );
+    try {
+      const run = `f${Date.now().toString(36)}`;
+      await addPerson(`ada-${run}`, "openasy-admins");
+      await addPerson(`noel-${run}`, "openasy-viewers");
+      const ada = app.browser();
+      expect(await signInThroughKeycloak(ada, `ada-${run}`)).toBe("/");
+      const role = async () => (await ada.json<{ user: { role: string; accessRule: string } }>("/api/v1/auth/me")).body.user;
+      expect(await role()).toMatchObject({ role: "admin", accessRule: "rule 2: group openasy-admins" });
+      // Noel's group is in no rule: refused, with no member made for him.
+      expect(await signInThroughKeycloak(app.browser(), `noel-${run}`)).toMatch(/add you to the access file/);
+
+      // The file changes: Ada's open session has the new role without signing in again.
+      writeFileSync(
+        path,
+        `${owner}  - group: openasy-admins\n    products: [test]\n    role: viewer\n  - group: openasy-viewers\n    products: "*"\n    role: viewer\n`,
+      );
+      app.auth.access!.read();
+      expect(await role()).toMatchObject({ role: "viewer" });
+      expect(await signInThroughKeycloak(app.browser(), `noel-${run}`)).toBe("/");
+
+      // Left out of the file: signed out at once.
+      writeFileSync(path, owner);
+      app.auth.access!.read();
+      expect((await ada.fetch("/api/v1/auth/me")).status).toBe(401);
+    } finally {
+      app.auth.access?.stop();
+      await app.close();
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

@@ -151,7 +151,11 @@
     "reset": "Sıfırla",
     "disable": "Devre dışı bırak",
     "enable": "Etkinleştir",
-    "confirmRemove": "{{email}} kaldırılsın mı?"
+    "confirmRemove": "{{email}} kaldırılsın mı?",
+    "fromFile": "Roller erişim dosyasından gelir",
+    "fromFileBody": "Buradaki herkesin rolünü {{path}} verir. Değişikliği orada yapın; bir dakika içinde yeniden okunur.",
+    "fileError": "Erişim dosyasında bir hata var; son geçerli sürümü uygulanmaya devam ediyor: {{error}}",
+    "rule": "Kaynak: {{rule}}"
   },
   "tokens": {
     "new": "Yeni token",

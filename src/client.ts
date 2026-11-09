@@ -28,6 +28,16 @@ export interface Member {
   lastSignInAt: string | null;
   mfa: { totp: boolean; passkeys: number };
   providers: string[];
+  /** With the access file, the rule the role comes from: "rule 2: group ops". */
+  accessRule: string | null;
+}
+
+/** The access file (OPENASY_ACCESS, ADR 0074): while it is in use, roles come only from it. */
+export interface AccessFile {
+  path: string;
+  appliedAt: string | null;
+  rules: number;
+  error: string | null;
 }
 
 export interface Me {
@@ -194,6 +204,7 @@ export const auth = {
   newRecoveryCodes: () => call<{ recoveryCodes: string[] }>("/me/recovery-codes", { body: {} }).then((r) => r.recoveryCodes),
 
   members: () => call<{ members: Member[] }>("/members").then((r) => r.members),
+  access: () => call<{ file: AccessFile | null }>("/access").then((r) => r.file),
   invite: (b: { email: string; name?: string; role: Role }) => call<{ member: Member; link: string; linkExpiresAt: string }>("/members", { body: b }),
   updateMember: (id: string, b: { role?: Role; status?: "active" | "disabled" }) =>
     call<Member>(`/members/${encodeURIComponent(id)}`, { method: "PATCH", body: b }),

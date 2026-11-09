@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { authOpenApi } from "../src/openapi.ts";
@@ -145,6 +148,7 @@ describe("/api/v1/auth matches its OpenAPI description", () => {
     };
     await check(o, "POST", "/api/v1/auth/members", undefined, { email: "ed@example.com", role: "editor" });
     await check(o, "GET", "/api/v1/auth/members");
+    await check(o, "GET", "/api/v1/auth/access");
     const token = new URL(invited.link).searchParams.get("link")!;
     const ed = fresh.browser();
     await check(ed, "GET", "/api/v1/auth/links/{token}", `/api/v1/auth/links/${token}`);
@@ -207,6 +211,21 @@ describe("/api/v1/auth matches its OpenAPI description", () => {
     const atIdp = await fetch(start.headers.get("location")!, { redirect: "manual" });
     const back = new URL(atIdp.headers.get("location")!);
     expect((await check(b, "GET", "/api/v1/auth/oidc/{id}/callback", back.pathname + back.search)).status).toBe(302);
+  });
+
+  it("the access file", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "openasy-contract-"));
+    const path = join(dir, "access.yaml");
+    writeFileSync(path, 'access:\n  - person: owner@example.com\n    products: "*"\n    role: owner\n');
+    const fresh = await startProduct({ access: path });
+    const o = await createOwner(fresh);
+    await addTotp(fresh, o);
+    await check(o, "GET", "/api/v1/auth/access");
+    await check(o, "GET", "/api/v1/auth/members");
+    await check(o, "POST", "/api/v1/auth/members", undefined, { email: "ed@example.com", role: "editor" });
+    fresh.auth.access?.stop();
+    await fresh.close();
+    rmSync(dir, { recursive: true, force: true });
   });
 
   it("covers every operation", () => {
