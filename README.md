@@ -115,8 +115,9 @@ access:
   Entra ID or any other provider. Each sign-in keeps the groups the provider sent, so a change to the file reaches
   people without a new sign-in. A product that keeps groups itself, as Identity does, passes `groupsOf`.
 - **The file is the only way in.** While it is used, the role mapping of providers is not, and Settings, Members can
-  no longer invite people or change roles; it shows the rule each role comes from. Disabling someone at once, new
-  password links and API tokens stay there. A token never has more than its creator: one that does is revoked.
+  no longer invite people or change roles; it shows the rule each role comes from. A product with users, such as
+  Identity, still invites people as `user`, and a rule that names them gives them its role. Disabling someone at once,
+  new password links and API tokens stay there. A token never has more than its creator: one that does is revoked.
 - **A change applies within a minute.** The file is checked every minute. People get their new role at once; people it
   no longer names are disabled and signed out, and let in again when it names them. A file with a mistake leaves its
   last good version in place, even across a restart, and Members says what to fix. People who signed in through a

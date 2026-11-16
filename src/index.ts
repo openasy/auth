@@ -1496,10 +1496,11 @@ export function createAuth(opts: AuthOptions) {
       path: "/members",
       handle: async ({ req, res, body }) => {
         const p = sessionPrincipal(req, "admin");
-        // With the access file, people get in through their provider with the role it gives them (ADR 0074).
-        if (accessPath) throw fromFile();
         const b = await body();
         const role = memberRole(b);
+        // With the access file, people get in with the role it gives them (ADR 0074). A product with users, such as
+        // Identity, still invites people who only use its applications: what they manage, the file decides.
+        if (accessPath && role !== "user") throw fromFile();
         mayManage(p.role, role);
         const email = readEmail(b);
         if (userByEmail(email)) throw new AuthError(409, "conflict", `${email} is already a member.`);

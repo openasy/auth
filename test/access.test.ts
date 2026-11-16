@@ -185,6 +185,33 @@ describe("roles from the access file", () => {
   });
 });
 
+describe("the access file in a product with users", () => {
+  it("still invites people who only use its applications, and gives a rule's role to them", async () => {
+    const file = accessFile(`${OWNER}  - person: ann@example.com\n    products: [test]\n    role: editor\n`);
+    const app = await startProduct({ access: file.path, users: true });
+    try {
+      const owner = app.browser();
+      const setup = new URL(app.auth.setupLink()!).searchParams.get("setup");
+      await owner.json("/api/v1/auth/setup", { body: { token: setup, name: "Olivia", email: "owner@example.com", password: PASSWORD } });
+      await addTotp(app, owner);
+      expect((await owner.json("/api/v1/auth/members", { body: { email: "bob@example.com", role: "user" } })).status).toBe(201);
+      expect((await owner.json("/api/v1/auth/members", { body: { email: "eve@example.com", role: "viewer" } })).status).toBe(409);
+      // Invited as a user, Ann gets what the file gives her once it is read again.
+      expect((await owner.json("/api/v1/auth/members", { body: { email: "ann@example.com", role: "user" } })).status).toBe(201);
+      app.auth.access!.reapply();
+      const roles = app.db.prepare("SELECT email, role, status FROM auth_users ORDER BY email").all();
+      expect(roles).toEqual([
+        { email: "ann@example.com", role: "editor", status: "invited" },
+        { email: "bob@example.com", role: "user", status: "invited" },
+        { email: "owner@example.com", role: "owner", status: "active" },
+      ]);
+    } finally {
+      app.auth.access?.stop();
+      await app.close();
+    }
+  });
+});
+
 describe("the access file across a restart", () => {
   it("applies the last good version when the file is broken at start", () => {
     const db = new DatabaseSync(":memory:");
